@@ -58,20 +58,36 @@
   .buy:disabled { filter: grayscale(.75) brightness(.75); cursor: default; }
   .buy:disabled:active { transform: none; box-shadow: 0 5px 0 #4c2b9e, 0 8px 18px rgba(0,0,0,.45); }
 
-  #toast {
+  #toast, .dialog {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
     background: rgba(20, 12, 40, .92); border: 2px solid #f5b92b; border-radius: 20px;
     color: #fff; padding: 22px 30px; text-align: center; z-index: 20;
-    box-shadow: 0 10px 40px rgba(0,0,0,.6); display: none;
+    box-shadow: 0 10px 40px rgba(0,0,0,.6); display: none; max-width: 86vw;
   }
-  #toast h2 { color: #ffd95e; margin-bottom: 8px; font-size: 22px; }
-  #toast p { font-size: 16px; margin-bottom: 14px; }
-  #toast button {
+  #toast h2, .dialog h2 { color: #ffd95e; margin-bottom: 8px; font-size: 22px; }
+  #toast p, .dialog p { font-size: 16px; margin-bottom: 14px; }
+  #toast button, .dialog button {
     border: none; border-radius: 12px; padding: 10px 26px;
     background: linear-gradient(#ffd95e, #f5a623); color: #4a2c00;
     font-weight: 800; font-size: 16px; cursor: pointer;
-    box-shadow: 0 4px 0 #b97a10;
+    box-shadow: 0 4px 0 #b97a10; margin: 0 5px;
   }
+  .dialog button.danger {
+    background: linear-gradient(#ff7070, #e03535); color: #fff;
+    box-shadow: 0 4px 0 #9c1f1f;
+  }
+  .dialog button.ghost {
+    background: #514266; color: #fff;
+    box-shadow: 0 4px 0 #363044;
+  }
+  #resetBtn {
+    pointer-events: auto; margin-left: 8px; flex: none;
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 2px solid #8a76c9; background: rgba(20, 12, 40, .75); color: #cdbdf5;
+    font-size: 20px; font-weight: 800; cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0,0,0,.4);
+  }
+  #resetBtn:active { transform: scale(.92); }
   #hint {
     position: fixed; bottom: 92px; left: 50%; transform: translateX(-50%);
     color: rgba(255,255,255,.85); font-size: 14px; font-weight: 600;
@@ -89,6 +105,14 @@
     <svg id="coinicon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#f5b92b"/><circle cx="12" cy="12" r="8" fill="#ffd95e"/><text x="12" y="16.5" text-anchor="middle" font-size="12" font-weight="900" fill="#c07f00">$</text></svg>
     <span id="coins">0</span>
   </div>
+  <button id="resetBtn" title="Reset game" aria-label="Reset game">⟳</button>
+</div>
+
+<div id="resetConfirm" class="dialog">
+  <h2>Start over?</h2>
+  <p>This wipes all coins, upgrades, and mine progress. There's no undo!</p>
+  <button id="resetYes" class="danger">RESET</button>
+  <button id="resetNo" class="ghost">KEEP PLAYING</button>
 </div>
 
 <div id="hint">Tap the sparkling gems to collect them!</div>
@@ -716,6 +740,32 @@ function bindBuy(btnId, getCost, apply, isMaxed) {
 bindBuy('buyMiner', minerCost, () => { state.miners++; floatText(400, 760, '+1 Miner!', '#a8ff9e', 30); }, () => state.miners >= MAX_MINERS);
 bindBuy('buySpeed', speedCost, () => { state.speedLv++; floatText(400, 760, 'Faster!', '#9edbff', 30); }, () => state.speedLv >= MAX_SPEED);
 bindBuy('buyValue', valueCost, () => { state.valueLv++; floatText(400, 760, 'Gems worth more!', '#ffd95e', 30); });
+
+// ============================== Reset ==============================
+$('resetBtn').addEventListener('click', () => { $('resetConfirm').style.display = 'block'; });
+$('resetNo').addEventListener('click', () => { $('resetConfirm').style.display = 'none'; });
+$('resetYes').addEventListener('click', () => {
+  try {
+    localStorage.removeItem('gemrush_save_v2');
+    localStorage.removeItem('gemrush_save_v1');
+  } catch (e) {}
+  state.coins = 0;
+  state.miners = 1;
+  state.speedLv = 1;
+  state.valueLv = 1;
+  state.level = 1;
+  state.unlocked = [true, false, false, false];
+  miners.length = 0;
+  particles.length = 0; floaters.length = 0; flyCoins.length = 0;
+  chest = null; chestTimer = 20;
+  tapCombo = 0; tapComboT = 0;
+  loadLevel();
+  save();
+  refreshShop();
+  $('resetConfirm').style.display = 'none';
+  floatText(400, 600, 'Fresh start!', '#a8ff9e', 34);
+  sfx.unlock();
+});
 
 function refreshShop() {
   const mMax = state.miners >= MAX_MINERS, sMax = state.speedLv >= MAX_SPEED;
