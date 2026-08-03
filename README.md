@@ -12,6 +12,7 @@ A mindless-fun idle mining game in the style of *Idle Zombie Miner*. No fail sta
   - **⚡ SPEED** — miners move and dig faster
   - **💰 VALUE** — every gem is worth more
 - **Unlock new ore zones** by tapping the locked gates when you can afford them — each mine has 4 ore types, each worth way more than the last.
+- **Every mine has a different shape** — open pits, twin hollows joined by a road, a three-way crossroads, a winding serpent canyon, and a ring of caves around a rocky island. Your miners drive the roads between chambers to haul their gems home.
 - **Travel through 10 themed mines!** Unlock all 4 ores in a mine and a glowing **NEXT MINE** portal appears in the pit center. Pay the fare to move on: Amethyst Hollow → Frost Cavern → Lava Fields → Jungle Mine → Desert Quarry → Abyss Depths → Candy Caves → Royal Vault → Obsidian Rift → Celestial Mine. Every mine has its own look, and ore values (and prices) grow 25× per mine — your coins and upgrades carry over.
 - **Come back later** — your miners keep working while you're away (up to 8 hours of offline earnings).
 

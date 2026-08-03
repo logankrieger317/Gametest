@@ -229,17 +229,45 @@ function fmt(n) {
 // 10 themed mines. Each has 4 ore patches at the same pit positions; values and
 // unlock costs scale by MINE_SCALE per level so pacing stays consistent while
 // numbers grow. Clearing all 4 opens the NEXT MINE portal in the pit center.
-const ORE_POS = [
-  { x: 250, y: 420, r: 78 },
-  { x: 565, y: 400, r: 82 },
-  { x: 185, y: 690, r: 74 },
-  { x: 610, y: 700, r: 74 },
-];
 const BASE_VALUES = [1, 6, 25, 90];
 const BASE_COSTS  = [0, 150, 1200, 9000];
 const NEXT_MINE_BASE = 30000;
 const MINE_SCALE = 25;
-const NEXT_GATE = { x: 400, y: 545 };
+
+// Mine layouts — chambers (floor ellipses) joined by roads. `nodes`+`edges`
+// double as both the drawn roads and the waypoint graph miners navigate.
+// Layouts cycle across the 10 mines, so each mine feels different.
+const LAYOUTS = [
+  { // Grand Pit — one big open bowl
+    chambers: [{ x: 400, y: 580, rx: 335, ry: 420 }],
+    nodes: [{ x: 400, y: 590 }], edges: [],
+    ores: [{ x: 230, y: 380, r: 75 }, { x: 575, y: 370, r: 80 }, { x: 165, y: 720, r: 72 }, { x: 635, y: 730, r: 72 }],
+    sell: { x: 400, y: 900 }, gate: { x: 400, y: 545 } },
+  { // Twin Hollows — two pits joined by a diagonal road
+    chambers: [{ x: 250, y: 400, rx: 210, ry: 190 }, { x: 520, y: 820, rx: 240, ry: 200 }],
+    nodes: [{ x: 250, y: 400 }, { x: 380, y: 610 }, { x: 520, y: 820 }],
+    edges: [[0, 1], [1, 2]],
+    ores: [{ x: 150, y: 340, r: 70 }, { x: 360, y: 330, r: 72 }, { x: 430, y: 900, r: 68 }, { x: 660, y: 850, r: 68 }],
+    sell: { x: 560, y: 750 }, gate: { x: 250, y: 480 } },
+  { // Crossroads — three chambers meeting at a central junction
+    chambers: [{ x: 400, y: 330, rx: 200, ry: 130 }, { x: 180, y: 800, rx: 150, ry: 170 }, { x: 620, y: 800, rx: 150, ry: 170 }],
+    nodes: [{ x: 400, y: 330 }, { x: 400, y: 590 }, { x: 180, y: 800 }, { x: 620, y: 800 }],
+    edges: [[0, 1], [1, 2], [1, 3]],
+    ores: [{ x: 290, y: 300, r: 68 }, { x: 510, y: 300, r: 68 }, { x: 180, y: 790, r: 66 }, { x: 620, y: 790, r: 66 }],
+    sell: { x: 400, y: 620 }, gate: { x: 400, y: 460 } },
+  { // Serpent Canyon — four caves along a winding road
+    chambers: [{ x: 200, y: 330, rx: 160, ry: 130 }, { x: 600, y: 480, rx: 150, ry: 120 }, { x: 230, y: 680, rx: 150, ry: 120 }, { x: 580, y: 880, rx: 170, ry: 130 }],
+    nodes: [{ x: 200, y: 330 }, { x: 600, y: 480 }, { x: 230, y: 680 }, { x: 580, y: 880 }],
+    edges: [[0, 1], [1, 2], [2, 3]],
+    ores: [{ x: 200, y: 290, r: 66 }, { x: 620, y: 430, r: 66 }, { x: 180, y: 640, r: 64 }, { x: 480, y: 840, r: 64 }],
+    sell: { x: 650, y: 930 }, gate: { x: 300, y: 730 } },
+  { // The Loop — a ring of caves around a rocky island
+    chambers: [{ x: 400, y: 300, rx: 170, ry: 110 }, { x: 660, y: 620, rx: 130, ry: 150 }, { x: 400, y: 920, rx: 180, ry: 110 }, { x: 150, y: 620, rx: 130, ry: 150 }],
+    nodes: [{ x: 400, y: 300 }, { x: 660, y: 620 }, { x: 400, y: 920 }, { x: 150, y: 620 }],
+    edges: [[0, 1], [1, 2], [2, 3], [3, 0]],
+    ores: [{ x: 310, y: 280, r: 64 }, { x: 670, y: 600, r: 62 }, { x: 140, y: 600, r: 62 }, { x: 300, y: 930, r: 58 }],
+    sell: { x: 490, y: 930 }, gate: { x: 490, y: 330 } },
+];
 
 const LEVELS = [
   { name: 'Amethyst Hollow', bg: ['#3b2d63', '#241b3f'], floor: ['#a9a3b8', '#b7b1c6'],
@@ -332,43 +360,103 @@ function allUnlocked() { return state.unlocked.every(u => u); }
 // ============================== World objects ==============================
 // Ore patches for the current mine. Locked ones show a gate with a price.
 let patches = [];
+let layout = LAYOUTS[0];
 function loadLevel() {
   const L = currentLevel(), m = levelMult();
-  patches = ORE_POS.map((pos, i) => Object.assign({}, pos, L.ores[i], {
+  layout = LAYOUTS[(state.level - 1) % LAYOUTS.length];
+  patches = layout.ores.map((pos, i) => Object.assign({}, pos, L.ores[i], {
     idx: i,
     value: BASE_VALUES[i] * m,
     cost: Math.round(BASE_COSTS[i] * m),
     gems: [], spawnT: 0,
   }));
-  for (const mn of miners) { mn.state = 'toOre'; mn.target = null; mn.load = 0; }
+  sellPad = { x: layout.sell.x, y: layout.sell.y, w: 190, h: 84 };
+  buildRocks();
+  chest = null;
+  for (const mn of miners) {
+    mn.x = sellPad.x + (Math.random() - 0.5) * 100;
+    mn.y = sellPad.y - 60;
+    mn.state = 'toOre'; mn.target = null; mn.route = null; mn.load = 0;
+  }
   document.getElementById('mineLabel').textContent =
     '⛏ Mine ' + state.level + '/' + LEVELS.length + ' — ' + L.name;
 }
 
-const sellPad = { x: 400, y: 900, w: 190, h: 84 };
-
-// Decorative rock ring around the pit
-const rocks = [];
-(function makeRocks() {
-  const cx = 400, cy = 590, rx = 360, ry = 470;
-  for (let i = 0; i < 34; i++) {
-    const a = (i / 34) * Math.PI * 2 + (i % 3) * 0.05;
-    const wob = 0.92 + ((i * 37) % 10) / 55;
-    rocks.push({
-      x: cx + Math.cos(a) * rx * wob,
-      y: cy + Math.sin(a) * ry * wob,
-      r: 46 + ((i * 53) % 30),
-      shade: ((i * 29) % 3),
-    });
+// Waypoint navigation along the layout's road graph
+function nearestNode(x, y) {
+  let bi = 0, bd = Infinity;
+  layout.nodes.forEach((n, i) => {
+    const d = Math.hypot(n.x - x, n.y - y);
+    if (d < bd) { bd = d; bi = i; }
+  });
+  return bi;
+}
+function findRoute(fx, fy, tx, ty) {
+  const nf = nearestNode(fx, fy), nt = nearestNode(tx, ty);
+  if (nf === nt) return [{ x: tx, y: ty }];
+  const prev = new Array(layout.nodes.length).fill(-1);
+  prev[nf] = nf;
+  const q = [nf];
+  while (q.length) {
+    const u = q.shift();
+    if (u === nt) break;
+    for (const [a, b] of layout.edges) {
+      const v = a === u ? b : b === u ? a : -1;
+      if (v >= 0 && prev[v] === -1) { prev[v] = u; q.push(v); }
+    }
   }
-})();
+  if (prev[nt] === -1) return [{ x: tx, y: ty }];
+  const pts = [];
+  let cur = nt;
+  while (cur !== nf) { pts.push(layout.nodes[cur]); cur = prev[cur]; }
+  pts.reverse();
+  // jitter waypoints so miners spread across the road instead of single-filing
+  const route = pts.map(p => ({ x: p.x + (Math.random() - 0.5) * 48, y: p.y + (Math.random() - 0.5) * 48 }));
+  route.push({ x: tx, y: ty });
+  return route;
+}
+function followRoute(m, spd, dt) {
+  if (!m.route || !m.route.length) return true;
+  const p = m.route[0];
+  if (moveToward(m, p.x, p.y, spd, dt)) m.route.shift();
+  return m.route.length === 0;
+}
+
+let sellPad = { x: 400, y: 900, w: 190, h: 84 };
+
+// Decorative rocks walling in the chambers, with gaps where roads pass
+const rocks = [];
+function distToSeg(px, py, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const L2 = dx * dx + dy * dy || 1;
+  let t = ((px - a.x) * dx + (py - a.y) * dy) / L2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (a.x + dx * t), py - (a.y + dy * t));
+}
+function buildRocks() {
+  rocks.length = 0;
+  const segs = layout.edges.map(([a, b]) => [layout.nodes[a], layout.nodes[b]]);
+  layout.chambers.forEach((ch, ci) => {
+    const per = Math.max(14, Math.round((ch.rx + ch.ry) / 26));
+    for (let i = 0; i < per; i++) {
+      const a = (i / per) * Math.PI * 2 + (i % 3) * 0.05 + ci * 0.4;
+      const wob = 0.98 + ((i * 37 + ci * 11) % 10) / 60;
+      const x = ch.x + Math.cos(a) * (ch.rx + 26) * wob;
+      const y = ch.y + Math.sin(a) * (ch.ry + 26) * wob;
+      if (segs.some(([p, q]) => distToSeg(x, y, p, q) < 88)) continue;
+      if (layout.chambers.some(c => c !== ch &&
+          ((x - c.x) / c.rx) ** 2 + ((y - c.y) / c.ry) ** 2 < 1)) continue;
+      rocks.push({ x, y, r: 40 + ((i * 53 + ci * 17) % 26), shade: (i * 29) % 3 });
+    }
+  });
+}
 
 // Miners (little bulldozers)
 const miners = [];
 function addMinerEntity(i) {
   miners.push({
-    x: 400 + (Math.random() - 0.5) * 120,
-    y: 800 + (Math.random() - 0.5) * 60,
+    x: sellPad.x + (Math.random() - 0.5) * 120,
+    y: sellPad.y - 60 + (Math.random() - 0.5) * 40,
     angle: -Math.PI / 2,
     state: 'toOre', t: 0, target: null,
     load: 0, hue: (i * 47) % 360, bob: Math.random() * 6,
@@ -423,7 +511,7 @@ function updatePatches(dt) {
 
 function updateMiners(dt) {
   while (miners.length < state.miners) addMinerEntity(miners.length);
-  const spd = 150 * speedMult();
+  const spd = 190 * speedMult();
 
   for (const m of miners) {
     m.bob += dt * 10;
@@ -432,8 +520,9 @@ function updateMiners(dt) {
         const ups = unlockedPatches();
         m.target = ups[Math.floor(Math.random() * ups.length)];
         m.dest = { x: m.target.x + (Math.random() - 0.5) * m.target.r, y: m.target.y + 30 + Math.random() * 30 };
+        m.route = findRoute(m.x, m.y, m.dest.x, m.dest.y);
       }
-      if (moveToward(m, m.dest.x, m.dest.y, spd, dt)) { m.state = 'mine'; m.t = 1.4 / speedMult(); }
+      if (followRoute(m, spd, dt)) { m.state = 'mine'; m.t = 1.4 / speedMult(); }
     } else if (m.state === 'mine') {
       m.t -= dt;
       if (Math.random() < dt * 14) {
@@ -445,9 +534,11 @@ function updateMiners(dt) {
         // eat a couple of the visible loose gems so the pile churns
         m.target.gems.splice(0, 2);
         m.state = 'toSell';
+        m.route = null;
       }
     } else if (m.state === 'toSell') {
-      if (moveToward(m, sellPad.x + (Math.random() - 0.5) * 8, sellPad.y - 10, spd, dt)) { m.state = 'sell'; m.t = 0.35; }
+      if (!m.route) m.route = findRoute(m.x, m.y, sellPad.x + (Math.random() - 0.5) * 30, sellPad.y - 10);
+      if (followRoute(m, spd, dt)) { m.state = 'sell'; m.t = 0.35; }
     } else if (m.state === 'sell') {
       m.t -= dt;
       if (m.t <= 0) {
@@ -456,7 +547,7 @@ function updateMiners(dt) {
         coinFly(m.x, m.y - 30, Math.ceil(m.load / 10));
         burst(m.x, m.y - 10, '#ffd95e', 8, 2.5);
         sfx.sell();
-        m.load = 0; m.state = 'toOre'; m.target = null;
+        m.load = 0; m.state = 'toOre'; m.target = null; m.route = null;
       }
     }
   }
@@ -484,7 +575,9 @@ function updateChest(dt) {
     chestTimer -= dt;
     if (chestTimer <= 0) {
       chestTimer = 35 + Math.random() * 30;
-      chest = { x: 250 + Math.random() * 300, y: 560 + Math.random() * 220, t: 0, life: 14 };
+      const ch = layout.chambers[Math.floor(Math.random() * layout.chambers.length)];
+      chest = { x: ch.x + (Math.random() - 0.5) * ch.rx * 0.9,
+                y: ch.y + (Math.random() - 0.5) * ch.ry * 0.9, t: 0, life: 14 };
     }
   }
 }
@@ -532,22 +625,24 @@ function onTap(px, py) {
   }
 
   // Next-mine portal?
+  const gpos = layout.gate;
   if (allUnlocked() && state.level < LEVELS.length &&
-      Math.hypot(w.x - NEXT_GATE.x, w.y - NEXT_GATE.y) < 95) {
+      Math.hypot(w.x - gpos.x, w.y - gpos.y) < 95) {
     const c = nextMineCost();
     if (state.coins >= c) {
       state.coins -= c;
       state.level++;
       state.unlocked = [true, false, false, false];
       loadLevel();
-      burst(NEXT_GATE.x, NEXT_GATE.y, '#ffd95e', 40, 6);
-      burst(NEXT_GATE.x, NEXT_GATE.y, '#ffffff', 20, 5);
-      floatText(NEXT_GATE.x, NEXT_GATE.y - 60, 'Mine ' + state.level + ': ' + currentLevel().name + '!', '#ffffff', 32);
+      const g2 = layout.gate;
+      burst(g2.x, g2.y, '#ffd95e', 40, 6);
+      burst(g2.x, g2.y, '#ffffff', 20, 5);
+      floatText(g2.x, g2.y - 60, 'Mine ' + state.level + ': ' + currentLevel().name + '!', '#ffffff', 32);
       sfx.unlock();
       shake = 12;
       save();
     } else {
-      floatText(NEXT_GATE.x, NEXT_GATE.y - 60, 'Need ' + fmt(c - state.coins) + ' more!', '#ff8080', 24);
+      floatText(gpos.x, gpos.y - 60, 'Need ' + fmt(c - state.coins) + ' more!', '#ff8080', 24);
       sfx.deny();
     }
     return;
@@ -666,18 +761,40 @@ function draw(t) {
 
 function drawPit() {
   const theme = currentLevel();
-  // floor
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const roadSegs = layout.edges.map(([a, b]) => [layout.nodes[a], layout.nodes[b]]);
+
+  // dark floor base: chambers + connecting roads
   ctx.fillStyle = theme.floor[0];
-  ctx.beginPath(); ctx.ellipse(400, 590, 330, 430, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = theme.floor[1];
-  ctx.beginPath(); ctx.ellipse(400, 570, 290, 385, 0, 0, Math.PI * 2); ctx.fill();
-  // subtle speckle
-  ctx.fillStyle = 'rgba(90,80,110,0.25)';
-  for (let i = 0; i < 40; i++) {
-    const a = i * 2.4, d = (i * 97) % 300;
-    ctx.beginPath(); ctx.arc(400 + Math.cos(a) * d, 580 + Math.sin(a) * d * 1.25, 2 + (i % 4), 0, Math.PI * 2); ctx.fill();
+  for (const ch of layout.chambers) {
+    ctx.beginPath(); ctx.ellipse(ch.x, ch.y, ch.rx, ch.ry, 0, 0, Math.PI * 2); ctx.fill();
   }
-  // rock ring
+  ctx.strokeStyle = theme.floor[0]; ctx.lineWidth = 150;
+  for (const [p, q] of roadSegs) {
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+  }
+  // lighter inner floor
+  ctx.fillStyle = theme.floor[1];
+  for (const ch of layout.chambers) {
+    ctx.beginPath();
+    ctx.ellipse(ch.x, ch.y - 8, Math.max(60, ch.rx - 34), Math.max(50, ch.ry - 34), 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.strokeStyle = theme.floor[1]; ctx.lineWidth = 104;
+  for (const [p, q] of roadSegs) {
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+  }
+  // subtle speckle
+  ctx.fillStyle = 'rgba(40,35,55,0.18)';
+  layout.chambers.forEach((ch, ci) => {
+    for (let i = 0; i < 18; i++) {
+      const a = i * 2.4 + ci;
+      const dx = Math.cos(a) * ch.rx * 0.7 * (((i * 97 + ci * 31) % 100) / 100);
+      const dy = Math.sin(a) * ch.ry * 0.7 * (((i * 53 + ci * 13) % 100) / 100);
+      ctx.beginPath(); ctx.arc(ch.x + dx, ch.y + dy, 2 + (i % 4), 0, Math.PI * 2); ctx.fill();
+    }
+  });
+  // rocks
   const shades = theme.rockLight;
   const darks  = theme.rockDark;
   for (const r of rocks) {
@@ -708,7 +825,7 @@ function drawSellPad(t) {
 
 function drawNextGate(t) {
   if (!allUnlocked()) return;
-  const g = NEXT_GATE;
+  const g = layout.gate;
 
   if (state.level >= LEVELS.length) {
     // final mine cleared — trophy badge, nothing left to buy
@@ -998,7 +1115,7 @@ function offlineEarnings() {
   if (away < 120) return;
   const capped = Math.min(away, 8 * 3600);
   const avgValue = unlockedPatches().reduce((s, p) => s + p.value, 0) / unlockedPatches().length;
-  const cycle = (1.4 + 3.5) / speedMult(); // rough mine + travel time
+  const cycle = (1.4 + 5.5) / speedMult(); // rough mine + travel time
   const rate = state.miners * avgValue * (3 + state.speedLv) * valueMult() / cycle;
   const earned = Math.floor(rate * capped * 0.4);
   if (earned < 1) return;
