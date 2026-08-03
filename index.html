@@ -19,6 +19,10 @@
     color: #fff; font-weight: 800; font-size: 18px;
     text-shadow: 0 2px 6px rgba(0,0,0,.5);
   }
+  #mineLabel {
+    display: block; font-size: 12px; font-weight: 700; color: #cdbdf5;
+    text-shadow: 0 1px 3px rgba(0,0,0,.6);
+  }
   #coinbox {
     display: flex; align-items: center; gap: 8px;
     background: rgba(20, 12, 40, .75); border: 2px solid #f5b92b;
@@ -80,7 +84,7 @@
 <canvas id="game"></canvas>
 
 <div id="hud">
-  <div id="title">💎 Gem Rush</div>
+  <div id="title">💎 Gem Rush<span id="mineLabel"></span></div>
   <div id="coinbox">
     <svg id="coinicon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#f5b92b"/><circle cx="12" cy="12" r="8" fill="#ffd95e"/><text x="12" y="16.5" text-anchor="middle" font-size="12" font-weight="900" fill="#c07f00">$</text></svg>
     <span id="coins">0</span>
@@ -168,25 +172,40 @@ const state = {
   miners: 1,
   speedLv: 1,
   valueLv: 1,
-  unlocked: { diamond: true, gold: false, ruby: false, rainbow: false },
+  level: 1,
+  unlocked: [true, false, false, false],
   lastSeen: Date.now(),
 };
 
-const SAVE_KEY = 'gemrush_save_v1';
+const SAVE_KEY = 'gemrush_save_v2';
 function save() {
   state.lastSeen = Date.now();
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(state)); } catch (e) {}
 }
 function load() {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return;
+    let raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) {
+      // migrate v1 saves (single mine, unlocked was an object keyed by ore id)
+      const old = localStorage.getItem('gemrush_save_v1');
+      if (!old) return;
+      const o = JSON.parse(old);
+      state.coins = o.coins || 0;
+      state.miners = Math.max(1, o.miners || 1);
+      state.speedLv = Math.max(1, o.speedLv || 1);
+      state.valueLv = Math.max(1, o.valueLv || 1);
+      if (o.unlocked) state.unlocked = [true, !!o.unlocked.gold, !!o.unlocked.ruby, !!o.unlocked.rainbow];
+      state.lastSeen = o.lastSeen || Date.now();
+      return;
+    }
     const s = JSON.parse(raw);
     state.coins = s.coins || 0;
     state.miners = Math.max(1, s.miners || 1);
     state.speedLv = Math.max(1, s.speedLv || 1);
     state.valueLv = Math.max(1, s.valueLv || 1);
-    if (s.unlocked) Object.assign(state.unlocked, s.unlocked);
+    state.level = Math.min(Math.max(1, s.level || 1), LEVELS.length);
+    if (Array.isArray(s.unlocked) && s.unlocked.length === 4) state.unlocked = s.unlocked.map(Boolean);
+    state.unlocked[0] = true;
     state.lastSeen = s.lastSeen || Date.now();
   } catch (e) {}
 }
@@ -198,25 +217,133 @@ const speedMult = () => 1 + (state.speedLv - 1) * 0.22;
 const valueMult = () => 1 + (state.valueLv - 1) * 0.5;
 
 function fmt(n) {
+  if (n >= 1e15) return (n / 1e15).toFixed(1) + 'Q';
+  if (n >= 1e12) return (n / 1e12).toFixed(1) + 'T';
   if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
   if (n >= 1e4) return (n / 1e3).toFixed(1) + 'K';
   return Math.floor(n).toString();
 }
 
-// ============================== World objects ==============================
-// Ore patches around the pit. Locked ones show a gate with a price.
-const patches = [
-  { id: 'diamond', name: 'Crystal', x: 250, y: 420, r: 78, value: 1,  cost: 0,
-    color: '#eef4ff', spark: '#ffffff', mound: '#dfe8fa', moundDark: '#b9c6e6' },
-  { id: 'gold',    name: 'Gold',    x: 565, y: 400, r: 82, value: 6,  cost: 150,
-    color: '#ffc23e', spark: '#ffe9a8', mound: '#f5a623', moundDark: '#c77f12' },
-  { id: 'ruby',    name: 'Ruby',    x: 185, y: 690, r: 74, value: 25, cost: 1200,
-    color: '#ff5a6e', spark: '#ffb3bd', mound: '#e6394f', moundDark: '#a81f31' },
-  { id: 'rainbow', name: 'Prism',   x: 610, y: 700, r: 74, value: 90, cost: 9000,
-    color: '#c084fc', spark: '#f0dbff', mound: '#a855f7', moundDark: '#7e22ce' },
+// ============================== Levels ==============================
+// 10 themed mines. Each has 4 ore patches at the same pit positions; values and
+// unlock costs scale by MINE_SCALE per level so pacing stays consistent while
+// numbers grow. Clearing all 4 opens the NEXT MINE portal in the pit center.
+const ORE_POS = [
+  { x: 250, y: 420, r: 78 },
+  { x: 565, y: 400, r: 82 },
+  { x: 185, y: 690, r: 74 },
+  { x: 610, y: 700, r: 74 },
 ];
-patches.forEach(p => { p.gems = []; p.spawnT = 0; });
+const BASE_VALUES = [1, 6, 25, 90];
+const BASE_COSTS  = [0, 150, 1200, 9000];
+const NEXT_MINE_BASE = 30000;
+const MINE_SCALE = 25;
+const NEXT_GATE = { x: 400, y: 545 };
+
+const LEVELS = [
+  { name: 'Amethyst Hollow', bg: ['#3b2d63', '#241b3f'], floor: ['#a9a3b8', '#b7b1c6'],
+    rockLight: ['#8474bd', '#7563ad', '#9382cc'], rockDark: ['#5e4f91', '#524384', '#6b5aa5'],
+    ores: [
+      { name: 'Crystal', color: '#eef4ff', spark: '#ffffff', mound: '#dfe8fa', moundDark: '#b9c6e6' },
+      { name: 'Gold',    color: '#ffc23e', spark: '#ffe9a8', mound: '#f5a623', moundDark: '#c77f12' },
+      { name: 'Ruby',    color: '#ff5a6e', spark: '#ffb3bd', mound: '#e6394f', moundDark: '#a81f31' },
+      { name: 'Prism',   color: '#c084fc', spark: '#f0dbff', mound: '#a855f7', moundDark: '#7e22ce' },
+    ] },
+  { name: 'Frost Cavern', bg: ['#1e3a5f', '#12233d'], floor: ['#9fb8cc', '#b4cddd'],
+    rockLight: ['#6f9ec4', '#5f8db3', '#82addb'], rockDark: ['#48719a', '#3d648c', '#5480ab'],
+    ores: [
+      { name: 'Ice',      color: '#d8f4ff', spark: '#ffffff', mound: '#c2ecfc', moundDark: '#8fc6e0' },
+      { name: 'Sapphire', color: '#3f7bff', spark: '#a8c6ff', mound: '#2f63e0', moundDark: '#1d43a5' },
+      { name: 'Cobalt',   color: '#4fd8e8', spark: '#c0f4fa', mound: '#2ab8c9', moundDark: '#177f8d' },
+      { name: 'Aurora',   color: '#9ef0c0', spark: '#e0fff0', mound: '#5cd898', moundDark: '#2f9c66' },
+    ] },
+  { name: 'Lava Fields', bg: ['#4a1d15', '#2a0f0a'], floor: ['#8a6a5e', '#9c7a6a'],
+    rockLight: ['#a35540', '#8f4736', '#b56650'], rockDark: ['#6f3527', '#5f2c20', '#804030'],
+    ores: [
+      { name: 'Ember',      color: '#ffb35c', spark: '#ffe0b8', mound: '#f5923a', moundDark: '#b8641c' },
+      { name: 'Topaz',      color: '#ffd23e', spark: '#fff0b0', mound: '#e8b420', moundDark: '#a87f0e' },
+      { name: 'Garnet',     color: '#ff4040', spark: '#ffb0a8', mound: '#d82a2a', moundDark: '#961616' },
+      { name: 'Magma Core', color: '#ff7a2a', spark: '#ffd0a0', mound: '#e85510', moundDark: '#a03608' },
+    ] },
+  { name: 'Jungle Mine', bg: ['#1d4028', '#0f2616'], floor: ['#8fa88a', '#a2bb98'],
+    rockLight: ['#5f9c58', '#4f8a4a', '#72af68'], rockDark: ['#3d6e3a', '#325f30', '#4a8045'],
+    ores: [
+      { name: 'Jade',       color: '#7ee8a8', spark: '#d8ffe8', mound: '#4ecc84', moundDark: '#2a8f58' },
+      { name: 'Emerald',    color: '#2ee06a', spark: '#b0ffc8', mound: '#1cba52', moundDark: '#0e8038' },
+      { name: 'Moss Opal',  color: '#b8e858', spark: '#ecffc0', mound: '#94c832', moundDark: '#648c1c' },
+      { name: 'Wild Prism', color: '#58e8e0', spark: '#c8fffa', mound: '#2ac4bc', moundDark: '#168880' },
+    ] },
+  { name: 'Desert Quarry', bg: ['#5c4322', '#372812'], floor: ['#c4ad85', '#d4bf96'],
+    rockLight: ['#c49a5c', '#b0884c', '#d4ac70'], rockDark: ['#8f6e3c', '#7d5f32', '#a07c48'],
+    ores: [
+      { name: 'Amber',    color: '#ffb340', spark: '#ffe4b0', mound: '#e89420', moundDark: '#a8680e' },
+      { name: 'Sunstone', color: '#ff8c4a', spark: '#ffd4b8', mound: '#e86a24', moundDark: '#a84812' },
+      { name: 'Citrine',  color: '#ffe45c', spark: '#fff6c8', mound: '#e8c433', moundDark: '#a8891c' },
+      { name: 'Mirage',   color: '#6ad4ff', spark: '#d0f2ff', mound: '#38b4e8', moundDark: '#1c7ca8' },
+    ] },
+  { name: 'Abyss Depths', bg: ['#0e2440', '#060f1f'], floor: ['#7a8ba0', '#8c9eb2'],
+    rockLight: ['#3d6488', '#335578', '#4a7599'], rockDark: ['#264460', '#1f3a54', '#30546e'],
+    ores: [
+      { name: 'Pearl',         color: '#f4f0ff', spark: '#ffffff', mound: '#e0daf4', moundDark: '#aaa2c8' },
+      { name: 'Aquamarine',    color: '#54e0d8', spark: '#c8fffa', mound: '#28bcb4', moundDark: '#148078' },
+      { name: 'Abyssite',      color: '#7a5cff', spark: '#cfc0ff', mound: '#5a38e8', moundDark: '#3a20a0' },
+      { name: 'Leviathan Eye', color: '#ffd23e', spark: '#fff0b0', mound: '#e8a81c', moundDark: '#a8750e' },
+    ] },
+  { name: 'Candy Caves', bg: ['#5c2450', '#33122c'], floor: ['#d8a8c8', '#e8bcd6'],
+    rockLight: ['#e07ab0', '#cc6a9e', '#f08cc0'], rockDark: ['#a84f80', '#94436f', '#b85c8e'],
+    ores: [
+      { name: 'Sugar',       color: '#fff4fa', spark: '#ffffff', mound: '#ffe0f0', moundDark: '#d0a8be' },
+      { name: 'Bubblegum',   color: '#ff7ac8', spark: '#ffd0ec', mound: '#f050a8', moundDark: '#b03078' },
+      { name: 'Rose Quartz', color: '#ff9e9e', spark: '#ffe0e0', mound: '#f07070', moundDark: '#b04848' },
+      { name: 'Rainbow Pop', color: '#8ae05c', spark: '#e0ffc8', mound: '#5cc42e', moundDark: '#388518' },
+    ] },
+  { name: 'Royal Vault', bg: ['#3d2f10', '#241a06'], floor: ['#b0a488', '#c2b698'],
+    rockLight: ['#a8894a', '#94783e', '#bc9c5c'], rockDark: ['#7a6232', '#6a5429', '#8c723c'],
+    ores: [
+      { name: 'Silver',      color: '#e0e8f0', spark: '#ffffff', mound: '#c4d0dc', moundDark: '#909cab' },
+      { name: 'Gold Bar',    color: '#ffd23e', spark: '#fff0b0', mound: '#e8b41c', moundDark: '#a87f0e' },
+      { name: 'Crown Jewel', color: '#ff4a68', spark: '#ffb8c8', mound: '#e02a4a', moundDark: '#9c1830' },
+      { name: 'Scepter',     color: '#b06aff', spark: '#e4ccff', mound: '#8f3ce8', moundDark: '#6020a8' },
+    ] },
+  { name: 'Obsidian Rift', bg: ['#241f30', '#120f1c'], floor: ['#6a6474', '#7c7686'],
+    rockLight: ['#48404f', '#3c3542', '#544c5c'], rockDark: ['#302a36', '#28232e', '#383140'],
+    ores: [
+      { name: 'Onyx',       color: '#a8a0b8', spark: '#e8e4f0', mound: '#78708a', moundDark: '#4c4658' },
+      { name: 'Void Shard', color: '#8f5cff', spark: '#d4c0ff', mound: '#6c34e8', moundDark: '#4a1ea8' },
+      { name: 'Dark Star',  color: '#ff5ca8', spark: '#ffc0dc', mound: '#e0347f', moundDark: '#9c1e56' },
+      { name: 'Eclipse',    color: '#ffdc5c', spark: '#fff4c0', mound: '#e8bc2a', moundDark: '#a88414' },
+    ] },
+  { name: 'Celestial Mine', bg: ['#1c1b4a', '#0d0c28'], floor: ['#8c8ab4', '#9e9cc6'],
+    rockLight: ['#5c58a0', '#4e4a8c', '#6e6ab4'], rockDark: ['#3c3870', '#343060', '#464284'],
+    ores: [
+      { name: 'Stardust',     color: '#e8ecff', spark: '#ffffff', mound: '#ccd4fa', moundDark: '#969ec8' },
+      { name: 'Moonstone',    color: '#a8e0ff', spark: '#e4f6ff', mound: '#70bcf0', moundDark: '#4484b8' },
+      { name: 'Sunfire',      color: '#ffb040', spark: '#ffe4b8', mound: '#f08c1c', moundDark: '#b0600c' },
+      { name: 'Galaxy Heart', color: '#ff5cf0', spark: '#ffc4fa', mound: '#e030d0', moundDark: '#9c1c90' },
+    ] },
+];
+
+function currentLevel() { return LEVELS[Math.min(state.level, LEVELS.length) - 1]; }
+function levelMult() { return Math.pow(MINE_SCALE, state.level - 1); }
+function nextMineCost() { return Math.round(NEXT_MINE_BASE * levelMult()); }
+function allUnlocked() { return state.unlocked.every(u => u); }
+
+// ============================== World objects ==============================
+// Ore patches for the current mine. Locked ones show a gate with a price.
+let patches = [];
+function loadLevel() {
+  const L = currentLevel(), m = levelMult();
+  patches = ORE_POS.map((pos, i) => Object.assign({}, pos, L.ores[i], {
+    idx: i,
+    value: BASE_VALUES[i] * m,
+    cost: Math.round(BASE_COSTS[i] * m),
+    gems: [], spawnT: 0,
+  }));
+  for (const mn of miners) { mn.state = 'toOre'; mn.target = null; mn.load = 0; }
+  document.getElementById('mineLabel').textContent =
+    '⛏ Mine ' + state.level + '/' + LEVELS.length + ' — ' + L.name;
+}
 
 const sellPad = { x: 400, y: 900, w: 190, h: 84 };
 
@@ -274,7 +401,7 @@ function coinFly(x, y, n) {
 }
 
 // ============================== Game logic ==============================
-function unlockedPatches() { return patches.filter(p => state.unlocked[p.id]); }
+function unlockedPatches() { return patches.filter(p => state.unlocked[p.idx]); }
 
 function addCoins(n) {
   state.coins += n;
@@ -284,7 +411,7 @@ function addCoins(n) {
 
 function updatePatches(dt) {
   for (const p of patches) {
-    if (!state.unlocked[p.id]) continue;
+    if (!state.unlocked[p.idx]) continue;
     p.spawnT -= dt;
     if (p.spawnT <= 0 && p.gems.length < 26) {
       p.spawnT = 0.5 + Math.random() * 0.7;
@@ -301,7 +428,7 @@ function updateMiners(dt) {
   for (const m of miners) {
     m.bob += dt * 10;
     if (m.state === 'toOre') {
-      if (!m.target || !state.unlocked[m.target.id]) {
+      if (!m.target || !patches.includes(m.target) || !state.unlocked[m.target.idx]) {
         const ups = unlockedPatches();
         m.target = ups[Math.floor(Math.random() * ups.length)];
         m.dest = { x: m.target.x + (Math.random() - 0.5) * m.target.r, y: m.target.y + 30 + Math.random() * 30 };
@@ -390,7 +517,9 @@ function onTap(px, py) {
 
   // Chest?
   if (chest && Math.hypot(w.x - chest.x, w.y - chest.y) < 70) {
-    const reward = Math.max(25, Math.round((10 + state.miners * 8) * valueMult() * 6));
+    const ups = unlockedPatches();
+    const avgVal = ups.reduce((s, p) => s + p.value, 0) / ups.length;
+    const reward = Math.max(25, Math.round(avgVal * (15 + state.miners * 8) * valueMult() * 2));
     addCoins(reward);
     floatText(chest.x, chest.y - 60, '+' + fmt(reward), '#ffd95e', 34);
     burst(chest.x, chest.y, '#ffd95e', 26, 5);
@@ -402,13 +531,35 @@ function onTap(px, py) {
     return;
   }
 
+  // Next-mine portal?
+  if (allUnlocked() && state.level < LEVELS.length &&
+      Math.hypot(w.x - NEXT_GATE.x, w.y - NEXT_GATE.y) < 95) {
+    const c = nextMineCost();
+    if (state.coins >= c) {
+      state.coins -= c;
+      state.level++;
+      state.unlocked = [true, false, false, false];
+      loadLevel();
+      burst(NEXT_GATE.x, NEXT_GATE.y, '#ffd95e', 40, 6);
+      burst(NEXT_GATE.x, NEXT_GATE.y, '#ffffff', 20, 5);
+      floatText(NEXT_GATE.x, NEXT_GATE.y - 60, 'Mine ' + state.level + ': ' + currentLevel().name + '!', '#ffffff', 32);
+      sfx.unlock();
+      shake = 12;
+      save();
+    } else {
+      floatText(NEXT_GATE.x, NEXT_GATE.y - 60, 'Need ' + fmt(c - state.coins) + ' more!', '#ff8080', 24);
+      sfx.deny();
+    }
+    return;
+  }
+
   // Gate?
   for (const p of patches) {
-    if (state.unlocked[p.id]) continue;
+    if (state.unlocked[p.idx]) continue;
     if (Math.hypot(w.x - p.x, w.y - (p.y + 40)) < 100) {
       if (state.coins >= p.cost) {
         state.coins -= p.cost;
-        state.unlocked[p.id] = true;
+        state.unlocked[p.idx] = true;
         burst(p.x, p.y, p.color, 30, 5);
         burst(p.x, p.y, '#ffffff', 16, 4);
         floatText(p.x, p.y - 40, p.name + ' unlocked!', '#ffffff', 30);
@@ -426,7 +577,7 @@ function onTap(px, py) {
   // Loose gems — generous radius, collect the whole cluster under your thumb.
   let got = 0, gotValue = 0, gx = 0, gy = 0, col = '#fff';
   for (const p of patches) {
-    if (!state.unlocked[p.id]) continue;
+    if (!state.unlocked[p.idx]) continue;
     for (let i = p.gems.length - 1; i >= 0; i--) {
       const g = p.gems[i];
       if (Math.hypot(w.x - g.x, w.y - g.y) < 64) {
@@ -454,8 +605,10 @@ canvas.addEventListener('pointerdown', e => { e.preventDefault(); onTap(e.client
 
 // ============================== Shop ==============================
 const $ = id => document.getElementById(id);
-function bindBuy(btnId, getCost, apply) {
+const MAX_MINERS = 15, MAX_SPEED = 25;
+function bindBuy(btnId, getCost, apply, isMaxed) {
   $(btnId).addEventListener('click', () => {
+    if (isMaxed && isMaxed()) { sfx.deny(); return; }
     const c = getCost();
     if (state.coins < c) { sfx.deny(); return; }
     state.coins -= c;
@@ -465,19 +618,20 @@ function bindBuy(btnId, getCost, apply) {
     refreshShop();
   });
 }
-bindBuy('buyMiner', minerCost, () => { state.miners++; floatText(400, 760, '+1 Miner!', '#a8ff9e', 30); });
-bindBuy('buySpeed', speedCost, () => { state.speedLv++; floatText(400, 760, 'Faster!', '#9edbff', 30); });
+bindBuy('buyMiner', minerCost, () => { state.miners++; floatText(400, 760, '+1 Miner!', '#a8ff9e', 30); }, () => state.miners >= MAX_MINERS);
+bindBuy('buySpeed', speedCost, () => { state.speedLv++; floatText(400, 760, 'Faster!', '#9edbff', 30); }, () => state.speedLv >= MAX_SPEED);
 bindBuy('buyValue', valueCost, () => { state.valueLv++; floatText(400, 760, 'Gems worth more!', '#ffd95e', 30); });
 
 function refreshShop() {
+  const mMax = state.miners >= MAX_MINERS, sMax = state.speedLv >= MAX_SPEED;
   $('minerLvl').textContent = 'x' + state.miners;
   $('speedLvl').textContent = 'Lv ' + state.speedLv;
   $('valueLvl').textContent = 'Lv ' + state.valueLv;
-  $('minerCost').textContent = fmt(minerCost());
-  $('speedCost').textContent = fmt(speedCost());
+  $('minerCost').textContent = mMax ? 'MAX' : fmt(minerCost());
+  $('speedCost').textContent = sMax ? 'MAX' : fmt(speedCost());
   $('valueCost').textContent = fmt(valueCost());
-  $('buyMiner').disabled = state.coins < minerCost();
-  $('buySpeed').disabled = state.coins < speedCost();
+  $('buyMiner').disabled = mMax || state.coins < minerCost();
+  $('buySpeed').disabled = sMax || state.coins < speedCost();
   $('buyValue').disabled = state.coins < valueCost();
 }
 
@@ -485,9 +639,10 @@ function refreshShop() {
 function draw(t) {
   ctx.clearRect(0, 0, W, H);
 
-  // Background
+  // Background (themed per mine)
+  const theme = currentLevel();
   const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#3b2d63'); bg.addColorStop(1, '#241b3f');
+  bg.addColorStop(0, theme.bg[0]); bg.addColorStop(1, theme.bg[1]);
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
   ctx.save();
@@ -498,6 +653,7 @@ function draw(t) {
 
   drawPit();
   drawSellPad(t);
+  drawNextGate(t);
   for (const p of patches) drawPatch(p, t);
   if (chest) drawChest(t);
   drawMiners(t);
@@ -509,10 +665,11 @@ function draw(t) {
 }
 
 function drawPit() {
+  const theme = currentLevel();
   // floor
-  ctx.fillStyle = '#a9a3b8';
+  ctx.fillStyle = theme.floor[0];
   ctx.beginPath(); ctx.ellipse(400, 590, 330, 430, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#b7b1c6';
+  ctx.fillStyle = theme.floor[1];
   ctx.beginPath(); ctx.ellipse(400, 570, 290, 385, 0, 0, Math.PI * 2); ctx.fill();
   // subtle speckle
   ctx.fillStyle = 'rgba(90,80,110,0.25)';
@@ -521,8 +678,8 @@ function drawPit() {
     ctx.beginPath(); ctx.arc(400 + Math.cos(a) * d, 580 + Math.sin(a) * d * 1.25, 2 + (i % 4), 0, Math.PI * 2); ctx.fill();
   }
   // rock ring
-  const shades = ['#8474bd', '#7563ad', '#9382cc'];
-  const darks  = ['#5e4f91', '#524384', '#6b5aa5'];
+  const shades = theme.rockLight;
+  const darks  = theme.rockDark;
   for (const r of rocks) {
     ctx.fillStyle = darks[r.shade];
     ctx.beginPath(); ctx.ellipse(r.x, r.y + 8, r.r, r.r * 0.85, 0, 0, Math.PI * 2); ctx.fill();
@@ -549,8 +706,72 @@ function drawSellPad(t) {
   ctx.restore();
 }
 
+function drawNextGate(t) {
+  if (!allUnlocked()) return;
+  const g = NEXT_GATE;
+
+  if (state.level >= LEVELS.length) {
+    // final mine cleared — trophy badge, nothing left to buy
+    const bob = Math.sin(t * 2) * 4;
+    ctx.font = '900 44px Segoe UI, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('👑', g.x, g.y - 26 + bob);
+    ctx.font = '900 24px Segoe UI, sans-serif';
+    ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(30,18,55,0.85)';
+    ctx.strokeText('ALL MINES CLEARED!', g.x, g.y + 22 + bob);
+    ctx.fillStyle = '#ffd95e';
+    ctx.fillText('ALL MINES CLEARED!', g.x, g.y + 22 + bob);
+    return;
+  }
+
+  const afford = state.coins >= nextMineCost();
+  const pulse = 1 + Math.sin(t * 4) * 0.05;
+
+  // glowing portal ring
+  ctx.save();
+  ctx.translate(g.x, g.y - 20);
+  ctx.scale(pulse, pulse);
+  const glow = ctx.createRadialGradient(0, 0, 10, 0, 0, 80);
+  glow.addColorStop(0, afford ? 'rgba(255,217,94,0.55)' : 'rgba(180,160,220,0.35)');
+  glow.addColorStop(1, 'rgba(255,217,94,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(0, 0, 80, 0, Math.PI * 2); ctx.fill();
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = afford ? '#ffd95e' : '#9c8fc4';
+  ctx.beginPath(); ctx.ellipse(0, 6, 58, 34, 0, 0, Math.PI * 2); ctx.stroke();
+  // swirl sparkles
+  for (let i = 0; i < 5; i++) {
+    const a = t * 2.2 + i * 1.26;
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.4 + Math.sin(a * 3) * 0.3) + ')';
+    star(Math.cos(a) * 44, 6 + Math.sin(a) * 24, 5); ctx.fill();
+  }
+  ctx.fillStyle = '#fff';
+  ctx.font = '900 22px Segoe UI, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(30,18,55,0.85)';
+  ctx.strokeText('NEXT MINE', 0, -46);
+  ctx.fillText('NEXT MINE', 0, -46);
+  ctx.restore();
+
+  // price tag
+  ctx.save();
+  ctx.translate(g.x, g.y + 46);
+  ctx.fillStyle = afford ? '#6a3fd8' : '#514266';
+  rounded(-80, -22, 160, 44, 12); ctx.fill();
+  if (afford) {
+    ctx.strokeStyle = 'rgba(255,217,94,' + (0.5 + Math.sin(t * 5) * 0.4) + ')';
+    ctx.lineWidth = 3;
+    rounded(-80, -22, 160, 44, 12); ctx.stroke();
+  }
+  ctx.fillStyle = '#fff';
+  ctx.font = '900 26px Segoe UI, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(fmt(nextMineCost()), 0, 1);
+  ctx.restore();
+}
+
 function drawPatch(p, t) {
-  const unlocked = state.unlocked[p.id];
+  const unlocked = state.unlocked[p.idx];
 
   // ore mound
   ctx.globalAlpha = unlocked ? 1 : 0.55;
@@ -796,6 +1017,7 @@ function offlineEarnings() {
 
 // ============================== Main loop ==============================
 load();
+loadLevel();
 offlineEarnings();
 refreshShop();
 
