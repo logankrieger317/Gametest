@@ -41,8 +41,8 @@
     z-index: 10;
   }
   .buy {
-    flex: 1; max-width: 150px;
-    border: none; border-radius: 16px; padding: 10px 6px 9px;
+    flex: 1; max-width: 118px;
+    border: none; border-radius: 16px; padding: 10px 4px 9px;
     background: linear-gradient(#8a5cf5, #6a3fd8);
     box-shadow: 0 5px 0 #4c2b9e, 0 8px 18px rgba(0,0,0,.45);
     color: #fff; font-weight: 800; font-size: 14px;
@@ -51,8 +51,8 @@
     transition: transform .08s, filter .15s;
   }
   .buy:active { transform: translateY(3px); box-shadow: 0 2px 0 #4c2b9e, 0 4px 10px rgba(0,0,0,.45); }
-  .buy .big { font-size: 15px; letter-spacing: .3px; }
-  .buy .lvl { font-size: 11px; opacity: .85; font-weight: 700; }
+  .buy .big { font-size: 13px; letter-spacing: .2px; }
+  .buy .lvl { font-size: 10px; opacity: .85; font-weight: 700; white-space: nowrap; }
   .buy .cost { font-size: 13px; color: #ffd95e; display: flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
   .buy .cost svg { width: 14px; height: 14px; }
   .buy:disabled { filter: grayscale(.75) brightness(.75); cursor: default; }
@@ -115,11 +115,11 @@
   <button id="resetNo" class="ghost">KEEP PLAYING</button>
 </div>
 
-<div id="hint">Tap the sparkling gems to collect them!</div>
+<div id="hint">Drag to drive your dozer! Tap a dozer to select it for upgrades.</div>
 
 <div id="shop">
   <button class="buy" id="buyMiner">
-    <span class="big">⛏ MINER</span>
+    <span class="big">🚜 DOZER</span>
     <span class="lvl" id="minerLvl">x1</span>
     <span class="cost"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#f5b92b"/><circle cx="12" cy="12" r="8" fill="#ffd95e"/></svg><span id="minerCost">50</span></span>
   </button>
@@ -127,6 +127,11 @@
     <span class="big">⚡ SPEED</span>
     <span class="lvl" id="speedLvl">Lv 1</span>
     <span class="cost"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#f5b92b"/><circle cx="12" cy="12" r="8" fill="#ffd95e"/></svg><span id="speedCost">30</span></span>
+  </button>
+  <button class="buy" id="buyCargo">
+    <span class="big">📦 CARGO</span>
+    <span class="lvl" id="cargoLvl">Lv 1</span>
+    <span class="cost"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#f5b92b"/><circle cx="12" cy="12" r="8" fill="#ffd95e"/></svg><span id="cargoCost">35</span></span>
   </button>
   <button class="buy" id="buyValue">
     <span class="big">💰 VALUE</span>
@@ -191,53 +196,74 @@ const sfx = {
 };
 
 // ============================== State ==============================
+// dozers[0] is the player's; the rest are bots. Each has its own
+// s (speed level) and c (cargo level).
 const state = {
   coins: 0,
-  miners: 1,
-  speedLv: 1,
   valueLv: 1,
   level: 1,
   unlocked: [true, false, false, false],
+  dozers: [{ s: 1, c: 1 }],
   lastSeen: Date.now(),
 };
+let selectedDozer = 0;
 
-const SAVE_KEY = 'gemrush_save_v2';
+const MAX_DOZERS = 15, MAX_LVL = 25;
+
+const SAVE_KEY = 'gemrush_save_v3';
 function save() {
   state.lastSeen = Date.now();
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(state)); } catch (e) {}
 }
+function migrateOld(o, isV1) {
+  // v1/v2 saves had a global miner count + shared speed level
+  state.coins = o.coins || 0;
+  state.valueLv = Math.max(1, o.valueLv || 1);
+  state.level = isV1 ? 1 : Math.min(Math.max(1, o.level || 1), LEVELS.length);
+  const n = Math.min(MAX_DOZERS, Math.max(1, o.miners || 1));
+  const s = Math.min(MAX_LVL, Math.max(1, o.speedLv || 1));
+  state.dozers = Array.from({ length: n }, () => ({ s, c: Math.max(1, Math.round(s * 0.7)) }));
+  if (isV1) {
+    if (o.unlocked) state.unlocked = [true, !!o.unlocked.gold, !!o.unlocked.ruby, !!o.unlocked.rainbow];
+  } else if (Array.isArray(o.unlocked) && o.unlocked.length === 4) {
+    state.unlocked = o.unlocked.map(Boolean);
+  }
+  state.unlocked[0] = true;
+  state.lastSeen = o.lastSeen || Date.now();
+}
 function load() {
   try {
-    let raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) {
-      // migrate v1 saves (single mine, unlocked was an object keyed by ore id)
-      const old = localStorage.getItem('gemrush_save_v1');
-      if (!old) return;
-      const o = JSON.parse(old);
-      state.coins = o.coins || 0;
-      state.miners = Math.max(1, o.miners || 1);
-      state.speedLv = Math.max(1, o.speedLv || 1);
-      state.valueLv = Math.max(1, o.valueLv || 1);
-      if (o.unlocked) state.unlocked = [true, !!o.unlocked.gold, !!o.unlocked.ruby, !!o.unlocked.rainbow];
-      state.lastSeen = o.lastSeen || Date.now();
+      const v2 = localStorage.getItem('gemrush_save_v2');
+      if (v2) { migrateOld(JSON.parse(v2), false); return; }
+      const v1 = localStorage.getItem('gemrush_save_v1');
+      if (v1) { migrateOld(JSON.parse(v1), true); return; }
       return;
     }
     const s = JSON.parse(raw);
     state.coins = s.coins || 0;
-    state.miners = Math.max(1, s.miners || 1);
-    state.speedLv = Math.max(1, s.speedLv || 1);
     state.valueLv = Math.max(1, s.valueLv || 1);
     state.level = Math.min(Math.max(1, s.level || 1), LEVELS.length);
     if (Array.isArray(s.unlocked) && s.unlocked.length === 4) state.unlocked = s.unlocked.map(Boolean);
     state.unlocked[0] = true;
+    if (Array.isArray(s.dozers) && s.dozers.length) {
+      state.dozers = s.dozers.slice(0, MAX_DOZERS).map(d => ({
+        s: Math.min(MAX_LVL, Math.max(1, d.s || 1)),
+        c: Math.min(MAX_LVL, Math.max(1, d.c || 1)),
+      }));
+    }
     state.lastSeen = s.lastSeen || Date.now();
   } catch (e) {}
 }
 
-const minerCost = () => Math.floor(50 * Math.pow(1.65, state.miners - 1));
-const speedCost = () => Math.floor(30 * Math.pow(1.6, state.speedLv - 1));
+const dozerCost = () => Math.floor(50 * Math.pow(1.65, state.dozers.length - 1));
+const speedCost = d => Math.floor(30 * Math.pow(1.6, d.s - 1));
+const cargoCost = d => Math.floor(35 * Math.pow(1.6, d.c - 1));
 const valueCost = () => Math.floor(40 * Math.pow(1.6, state.valueLv - 1));
-const speedMult = () => 1 + (state.speedLv - 1) * 0.22;
+const dozerSpeedMult = d => 1 + (d.s - 1) * 0.22;
+const dozerCargo = d => 2 + d.c * 2;          // bot haul multiplier
+const playerCap = d => 5 + d.c * 3;           // player cargo slots
 const valueMult = () => 1 + (state.valueLv - 1) * 0.5;
 
 function fmt(n) {
@@ -401,6 +427,7 @@ function loadLevel() {
     mn.x = sellPad.x + (Math.random() - 0.5) * 100;
     mn.y = sellPad.y - 60;
     mn.state = 'toOre'; mn.target = null; mn.route = null; mn.load = 0;
+    mn.units = 0; mn.loadVal = 0; mn.digT = 0; mn.wasFull = false;
   }
   document.getElementById('mineLabel').textContent =
     '⛏ Mine ' + state.level + '/' + LEVELS.length + ' — ' + L.name;
@@ -479,12 +506,27 @@ function buildRocks() {
 const miners = [];
 function addMinerEntity(i) {
   miners.push({
+    idx: i, isPlayer: i === 0,
     x: sellPad.x + (Math.random() - 0.5) * 120,
     y: sellPad.y - 60 + (Math.random() - 0.5) * 40,
     angle: -Math.PI / 2,
-    state: 'toOre', t: 0, target: null,
-    load: 0, hue: (i * 47) % 360, bob: Math.random() * 6,
+    state: 'toOre', t: 0, target: null, route: null,
+    load: 0, hue: i === 0 ? 45 : (i * 47) % 360, bob: Math.random() * 6,
+    units: 0, loadVal: 0, digT: 0, loadColor: '#ffd95e', wasFull: false,
   });
+}
+
+// Where the player's dozer is allowed to drive: chamber floors and roads.
+function isOnFloor(x, y) {
+  for (const ch of layout.chambers) {
+    const ex = (x - ch.x) / Math.max(1, ch.rx - 16);
+    const ey = (y - ch.y) / Math.max(1, ch.ry - 16);
+    if (ex * ex + ey * ey <= 1) return true;
+  }
+  for (const [a, b] of layout.edges) {
+    if (distToSeg(x, y, layout.nodes[a], layout.nodes[b]) < 52) return true;
+  }
+  return false;
 }
 
 // FX
@@ -534,10 +576,14 @@ function updatePatches(dt) {
 }
 
 function updateMiners(dt) {
-  while (miners.length < state.miners) addMinerEntity(miners.length);
-  const spd = 190 * speedMult();
+  while (miners.length < state.dozers.length) addMinerEntity(miners.length);
 
-  for (const m of miners) {
+  miners.forEach((m, i) => {
+    const d = state.dozers[i];
+    if (!d) return;
+    if (m.isPlayer) { updatePlayer(m, d, dt); return; }
+
+    const spd = 190 * dozerSpeedMult(d);
     m.bob += dt * 10;
     if (m.state === 'toOre') {
       if (!m.target || !patches.includes(m.target) || !state.unlocked[m.target.idx]) {
@@ -546,14 +592,14 @@ function updateMiners(dt) {
         m.dest = { x: m.target.x + (Math.random() - 0.5) * m.target.r, y: m.target.y + 30 + Math.random() * 30 };
         m.route = findRoute(m.x, m.y, m.dest.x, m.dest.y);
       }
-      if (followRoute(m, spd, dt)) { m.state = 'mine'; m.t = 1.4 / speedMult(); }
+      if (followRoute(m, spd, dt)) { m.state = 'mine'; m.t = 1.4 / dozerSpeedMult(d); }
     } else if (m.state === 'mine') {
       m.t -= dt;
       if (Math.random() < dt * 14) {
         particles.push({ x: m.x + (Math.random() - 0.5) * 30, y: m.y + (Math.random() - 0.5) * 16, vx: (Math.random() - 0.5) * 2, vy: -1 - Math.random() * 2, life: 0.5, color: m.target.spark, size: 2 + Math.random() * 3, grav: 4 });
       }
       if (m.t <= 0) {
-        m.load = Math.round(m.target.value * (3 + state.speedLv) * valueMult());
+        m.load = Math.round(m.target.value * dozerCargo(d) * valueMult());
         m.loadColor = m.target.color;
         // eat a couple of the visible loose gems so the pile churns
         m.target.gems.splice(0, 2);
@@ -574,6 +620,97 @@ function updateMiners(dt) {
         m.load = 0; m.state = 'toOre'; m.target = null; m.route = null;
       }
     }
+  });
+}
+
+let lastPickupSfx = 0;
+function updatePlayer(m, d, dt) {
+  const spd = 230 * dozerSpeedMult(d);
+  const cap = playerCap(d);
+
+  // steering: joystick drag or keyboard
+  let vx = 0, vy = 0;
+  if (joy && joy.moved) {
+    const len = Math.hypot(joy.dx, joy.dy) || 1;
+    const mag = Math.min(1, len / 70);
+    vx = joy.dx / len * mag; vy = joy.dy / len * mag;
+  }
+  const kx = (keys.ArrowRight || keys.d ? 1 : 0) - (keys.ArrowLeft || keys.a ? 1 : 0);
+  const ky = (keys.ArrowDown || keys.s ? 1 : 0) - (keys.ArrowUp || keys.w ? 1 : 0);
+  if (kx || ky) { const kl = Math.hypot(kx, ky); vx = kx / kl; vy = ky / kl; }
+
+  if (vx || vy) {
+    const nx = m.x + vx * spd * dt, ny = m.y + vy * spd * dt;
+    if (isOnFloor(nx, m.y)) m.x = nx;
+    if (isOnFloor(m.x, ny)) m.y = ny;
+    const want = Math.atan2(vy, vx);
+    let da = want - m.angle;
+    while (da > Math.PI) da -= Math.PI * 2;
+    while (da < -Math.PI) da += Math.PI * 2;
+    m.angle += da * Math.min(1, dt * 10);
+    m.bob += dt * 14;
+  }
+
+  const now = performance.now() / 1000;
+
+  // scoop loose gems by driving over them
+  for (const p of patches) {
+    if (!state.unlocked[p.idx]) continue;
+    for (let gi = p.gems.length - 1; gi >= 0; gi--) {
+      if (m.units >= cap) break;
+      const g = p.gems[gi];
+      if (Math.hypot(m.x - g.x, m.y - g.y) < 46) {
+        m.units++; m.loadVal += p.value * valueMult(); m.loadColor = p.color;
+        particles.push({ x: g.x, y: g.y, vx: (Math.random() - 0.5) * 2, vy: -3, life: 0.4, color: p.spark, size: 4, grav: 8 });
+        p.gems.splice(gi, 1);
+        if (now - lastPickupSfx > 0.09) { lastPickupSfx = now; sfx.pickup(Math.min(m.units, 8)); }
+      }
+    }
+  }
+
+  // dig while parked on an ore mound
+  if (m.units < cap) {
+    const p = patches.find(p => state.unlocked[p.idx] && Math.hypot(m.x - p.x, m.y - p.y) < p.r + 8);
+    if (p) {
+      m.digT -= dt;
+      if (m.digT <= 0) {
+        m.digT = 0.4 / dozerSpeedMult(d);
+        m.units++; m.loadVal += p.value * valueMult(); m.loadColor = p.color;
+        for (let k = 0; k < 3; k++) {
+          particles.push({ x: m.x + (Math.random() - 0.5) * 34, y: m.y + (Math.random() - 0.5) * 20, vx: (Math.random() - 0.5) * 2.5, vy: -1.5 - Math.random() * 2, life: 0.5, color: p.spark, size: 2 + Math.random() * 3, grav: 5 });
+        }
+        if (now - lastPickupSfx > 0.15) { lastPickupSfx = now; sfx.pickup(3); }
+      }
+    }
+  }
+
+  // full-cargo nudge
+  if (m.units >= cap && !m.wasFull) { m.wasFull = true; floatText(m.x, m.y - 60, 'FULL! Drive to SELL', '#ffd95e', 22); }
+  if (m.units < cap) m.wasFull = false;
+
+  // sell by driving onto the pad
+  if (m.units > 0 &&
+      Math.abs(m.x - sellPad.x) < sellPad.w / 2 + 26 &&
+      Math.abs(m.y - sellPad.y) < sellPad.h / 2 + 26) {
+    const total = Math.max(1, Math.round(m.loadVal));
+    addCoins(total);
+    floatText(m.x, m.y - 50, '+' + fmt(total));
+    coinFly(m.x, m.y - 30, Math.ceil(Math.min(8, m.units)));
+    burst(m.x, m.y - 10, '#ffd95e', 10, 3);
+    sfx.sell();
+    m.units = 0; m.loadVal = 0;
+    save();
+  }
+
+  // drive-into interactions: chest, locked gates, next-mine portal
+  if (chest && Math.hypot(m.x - chest.x, m.y - chest.y) < 60) openChest();
+  for (const p of patches) {
+    if (state.unlocked[p.idx]) continue;
+    if (Math.hypot(m.x - p.x, m.y - (p.y + 40)) < 95) tryUnlockPatch(p, false);
+  }
+  if (allUnlocked() && state.level < LEVELS.length &&
+      Math.hypot(m.x - layout.gate.x, m.y - layout.gate.y) < 80) {
+    tryPortal(false);
   }
 }
 
@@ -625,50 +762,86 @@ function updateFX(dt) {
     if (c.t >= 1) flyCoins.splice(i, 1);
   }
   if (shake > 0) shake = Math.max(0, shake - dt * 30);
+  if (denyMsgT > 0) denyMsgT -= dt;
   if (tapComboT > 0) { tapComboT -= dt; if (tapComboT <= 0) tapCombo = 0; }
 }
 
 // ============================== Input ==============================
+let denyMsgT = 0; // throttles "need more coins" messages from drive-into attempts
+
+function openChest() {
+  const ups = unlockedPatches();
+  const avgVal = ups.reduce((s, p) => s + p.value, 0) / ups.length;
+  const reward = Math.max(25, Math.round(avgVal * (15 + state.dozers.length * 8) * valueMult() * 2));
+  addCoins(reward);
+  floatText(chest.x, chest.y - 60, '+' + fmt(reward), '#ffd95e', 34);
+  burst(chest.x, chest.y, '#ffd95e', 26, 5);
+  burst(chest.x, chest.y, '#fff3c4', 14, 4);
+  coinFly(chest.x, chest.y, 8);
+  sfx.chest();
+  shake = 6;
+  chest = null;
+}
+
+function tryUnlockPatch(p, force) {
+  if (state.coins >= p.cost) {
+    state.coins -= p.cost;
+    state.unlocked[p.idx] = true;
+    burst(p.x, p.y, p.color, 30, 5);
+    burst(p.x, p.y, '#ffffff', 16, 4);
+    floatText(p.x, p.y - 40, p.name + ' unlocked!', '#ffffff', 30);
+    sfx.unlock();
+    shake = 8;
+    save();
+  } else if (force || denyMsgT <= 0) {
+    denyMsgT = 1.5;
+    floatText(p.x, p.y - 40, 'Need ' + fmt(p.cost - state.coins) + ' more!', '#ff8080', 24);
+    sfx.deny();
+  }
+}
+
+function tryPortal(force) {
+  const g = layout.gate;
+  const c = nextMineCost();
+  if (state.coins >= c) {
+    state.coins -= c;
+    state.level++;
+    state.unlocked = [true, false, false, false];
+    loadLevel();
+    const g2 = layout.gate;
+    burst(g2.x, g2.y, '#ffd95e', 40, 6);
+    burst(g2.x, g2.y, '#ffffff', 20, 5);
+    floatText(g2.x, g2.y - 60, 'Mine ' + state.level + ': ' + currentLevel().name + '!', '#ffffff', 32);
+    sfx.unlock();
+    shake = 12;
+    save();
+  } else if (force || denyMsgT <= 0) {
+    denyMsgT = 1.5;
+    floatText(g.x, g.y - 60, 'Need ' + fmt(c - state.coins) + ' more!', '#ff8080', 24);
+    sfx.deny();
+  }
+}
+
 function onTap(px, py) {
   const w = toWorld(px, py);
 
   // Chest?
-  if (chest && Math.hypot(w.x - chest.x, w.y - chest.y) < 70) {
-    const ups = unlockedPatches();
-    const avgVal = ups.reduce((s, p) => s + p.value, 0) / ups.length;
-    const reward = Math.max(25, Math.round(avgVal * (15 + state.miners * 8) * valueMult() * 2));
-    addCoins(reward);
-    floatText(chest.x, chest.y - 60, '+' + fmt(reward), '#ffd95e', 34);
-    burst(chest.x, chest.y, '#ffd95e', 26, 5);
-    burst(chest.x, chest.y, '#fff3c4', 14, 4);
-    coinFly(chest.x, chest.y, 8);
-    sfx.chest();
-    shake = 6;
-    chest = null;
-    return;
+  if (chest && Math.hypot(w.x - chest.x, w.y - chest.y) < 70) { openChest(); return; }
+
+  // Select a dozer?
+  for (let i = miners.length - 1; i >= 0; i--) {
+    if (Math.hypot(w.x - miners[i].x, w.y - miners[i].y) < 48) {
+      selectedDozer = i;
+      sfx.pickup(2);
+      refreshShop();
+      return;
+    }
   }
 
   // Next-mine portal?
-  const gpos = layout.gate;
   if (allUnlocked() && state.level < LEVELS.length &&
-      Math.hypot(w.x - gpos.x, w.y - gpos.y) < 95) {
-    const c = nextMineCost();
-    if (state.coins >= c) {
-      state.coins -= c;
-      state.level++;
-      state.unlocked = [true, false, false, false];
-      loadLevel();
-      const g2 = layout.gate;
-      burst(g2.x, g2.y, '#ffd95e', 40, 6);
-      burst(g2.x, g2.y, '#ffffff', 20, 5);
-      floatText(g2.x, g2.y - 60, 'Mine ' + state.level + ': ' + currentLevel().name + '!', '#ffffff', 32);
-      sfx.unlock();
-      shake = 12;
-      save();
-    } else {
-      floatText(gpos.x, gpos.y - 60, 'Need ' + fmt(c - state.coins) + ' more!', '#ff8080', 24);
-      sfx.deny();
-    }
+      Math.hypot(w.x - layout.gate.x, w.y - layout.gate.y) < 95) {
+    tryPortal(true);
     return;
   }
 
@@ -676,19 +849,7 @@ function onTap(px, py) {
   for (const p of patches) {
     if (state.unlocked[p.idx]) continue;
     if (Math.hypot(w.x - p.x, w.y - (p.y + 40)) < 100) {
-      if (state.coins >= p.cost) {
-        state.coins -= p.cost;
-        state.unlocked[p.idx] = true;
-        burst(p.x, p.y, p.color, 30, 5);
-        burst(p.x, p.y, '#ffffff', 16, 4);
-        floatText(p.x, p.y - 40, p.name + ' unlocked!', '#ffffff', 30);
-        sfx.unlock();
-        shake = 8;
-        save();
-      } else {
-        floatText(p.x, p.y - 40, 'Need ' + fmt(p.cost - state.coins) + ' more!', '#ff8080', 24);
-        sfx.deny();
-      }
+      tryUnlockPatch(p, true);
       return;
     }
   }
@@ -720,11 +881,38 @@ function onTap(px, py) {
   }
 }
 
-canvas.addEventListener('pointerdown', e => { e.preventDefault(); onTap(e.clientX, e.clientY); });
+// Pointer input: a quick tap fires onTap; press-and-drag becomes a floating
+// joystick that steers the player's dozer.
+let joy = null;
+const keys = {};
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (joy) return;
+  joy = { id: e.pointerId, sx: e.clientX, sy: e.clientY, dx: 0, dy: 0, moved: false, t0: performance.now() };
+});
+canvas.addEventListener('pointermove', e => {
+  if (!joy || e.pointerId !== joy.id) return;
+  joy.dx = e.clientX - joy.sx;
+  joy.dy = e.clientY - joy.sy;
+  if (Math.hypot(joy.dx, joy.dy) > 14) joy.moved = true;
+});
+function endJoy(e) {
+  if (!joy || e.pointerId !== joy.id) return;
+  if (!joy.moved && performance.now() - joy.t0 < 400) onTap(e.clientX, e.clientY);
+  joy = null;
+}
+canvas.addEventListener('pointerup', endJoy);
+canvas.addEventListener('pointercancel', endJoy);
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.key] = false; });
 
 // ============================== Shop ==============================
 const $ = id => document.getElementById(id);
-const MAX_MINERS = 15, MAX_SPEED = 25;
+const selDozer = () => state.dozers[Math.min(selectedDozer, state.dozers.length - 1)];
+const selName = () => selectedDozer === 0 ? 'YOU' : 'BOT ' + selectedDozer;
 function bindBuy(btnId, getCost, apply, isMaxed) {
   $(btnId).addEventListener('click', () => {
     if (isMaxed && isMaxed()) { sfx.deny(); return; }
@@ -737,8 +925,15 @@ function bindBuy(btnId, getCost, apply, isMaxed) {
     refreshShop();
   });
 }
-bindBuy('buyMiner', minerCost, () => { state.miners++; floatText(400, 760, '+1 Miner!', '#a8ff9e', 30); }, () => state.miners >= MAX_MINERS);
-bindBuy('buySpeed', speedCost, () => { state.speedLv++; floatText(400, 760, 'Faster!', '#9edbff', 30); }, () => state.speedLv >= MAX_SPEED);
+bindBuy('buyMiner', dozerCost,
+  () => { state.dozers.push({ s: 1, c: 1 }); floatText(400, 760, '+1 Dozer!', '#a8ff9e', 30); },
+  () => state.dozers.length >= MAX_DOZERS);
+bindBuy('buySpeed', () => speedCost(selDozer()),
+  () => { selDozer().s++; floatText(400, 760, selName() + ': faster!', '#9edbff', 30); },
+  () => selDozer().s >= MAX_LVL);
+bindBuy('buyCargo', () => cargoCost(selDozer()),
+  () => { selDozer().c++; floatText(400, 760, selName() + ': bigger cargo!', '#ffb974', 30); },
+  () => selDozer().c >= MAX_LVL);
 bindBuy('buyValue', valueCost, () => { state.valueLv++; floatText(400, 760, 'Gems worth more!', '#ffd95e', 30); });
 
 // ============================== Reset ==============================
@@ -746,15 +941,16 @@ $('resetBtn').addEventListener('click', () => { $('resetConfirm').style.display 
 $('resetNo').addEventListener('click', () => { $('resetConfirm').style.display = 'none'; });
 $('resetYes').addEventListener('click', () => {
   try {
+    localStorage.removeItem('gemrush_save_v3');
     localStorage.removeItem('gemrush_save_v2');
     localStorage.removeItem('gemrush_save_v1');
   } catch (e) {}
   state.coins = 0;
-  state.miners = 1;
-  state.speedLv = 1;
+  state.dozers = [{ s: 1, c: 1 }];
   state.valueLv = 1;
   state.level = 1;
   state.unlocked = [true, false, false, false];
+  selectedDozer = 0;
   miners.length = 0;
   particles.length = 0; floaters.length = 0; flyCoins.length = 0;
   chest = null; chestTimer = 20;
@@ -768,15 +964,21 @@ $('resetYes').addEventListener('click', () => {
 });
 
 function refreshShop() {
-  const mMax = state.miners >= MAX_MINERS, sMax = state.speedLv >= MAX_SPEED;
-  $('minerLvl').textContent = 'x' + state.miners;
-  $('speedLvl').textContent = 'Lv ' + state.speedLv;
+  if (selectedDozer >= state.dozers.length) selectedDozer = 0;
+  const d = selDozer(), who = selName();
+  const dMax = state.dozers.length >= MAX_DOZERS;
+  const sMax = d.s >= MAX_LVL, cMax = d.c >= MAX_LVL;
+  $('minerLvl').textContent = 'x' + state.dozers.length;
+  $('speedLvl').textContent = who + ' · Lv ' + d.s;
+  $('cargoLvl').textContent = who + ' · Lv ' + d.c;
   $('valueLvl').textContent = 'Lv ' + state.valueLv;
-  $('minerCost').textContent = mMax ? 'MAX' : fmt(minerCost());
-  $('speedCost').textContent = sMax ? 'MAX' : fmt(speedCost());
+  $('minerCost').textContent = dMax ? 'MAX' : fmt(dozerCost());
+  $('speedCost').textContent = sMax ? 'MAX' : fmt(speedCost(d));
+  $('cargoCost').textContent = cMax ? 'MAX' : fmt(cargoCost(d));
   $('valueCost').textContent = fmt(valueCost());
-  $('buyMiner').disabled = mMax || state.coins < minerCost();
-  $('buySpeed').disabled = sMax || state.coins < speedCost();
+  $('buyMiner').disabled = dMax || state.coins < dozerCost();
+  $('buySpeed').disabled = sMax || state.coins < speedCost(d);
+  $('buyCargo').disabled = cMax || state.coins < cargoCost(d);
   $('buyValue').disabled = state.coins < valueCost();
 }
 
@@ -807,6 +1009,7 @@ function draw(t) {
 
   ctx.restore();
   drawFlyCoins();
+  drawJoystick();
 }
 
 function drawPit() {
@@ -1081,6 +1284,12 @@ function drawMiners(t) {
     const bob = Math.sin(m.bob) * (m.state === 'mine' ? 2.5 : 1);
     ctx.save();
     ctx.translate(m.x, m.y + bob);
+    // selection ring
+    if (m.idx === selectedDozer) {
+      ctx.strokeStyle = 'rgba(255,255,255,' + (0.55 + Math.sin(t * 5) * 0.3) + ')';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.ellipse(0, 12 - bob, 40, 18, 0, 0, Math.PI * 2); ctx.stroke();
+    }
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
     ctx.beginPath(); ctx.ellipse(0, 14 - bob, 30, 11, 0, 0, Math.PI * 2); ctx.fill();
     ctx.rotate(m.angle + Math.PI / 2);
@@ -1099,15 +1308,48 @@ function drawMiners(t) {
     // cab window
     ctx.fillStyle = '#bfe8ff';
     rounded(-9, 2, 18, 12, 4); ctx.fill();
-    // carried load
-    if (m.load > 0) {
+    // carried load (bots use m.load, the player uses cargo units)
+    if (m.load > 0 || m.units > 0) {
       ctx.fillStyle = m.loadColor;
       ctx.beginPath(); ctx.ellipse(0, -26, 16, 9, 0, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = 'rgba(255,255,255,0.6)';
       ctx.beginPath(); ctx.ellipse(-4, -28, 6, 3, 0, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
+
+    // player extras drawn upright: name tag + cargo bar
+    if (m.isPlayer) {
+      const cap = playerCap(state.dozers[0]);
+      ctx.font = '900 14px Segoe UI, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(30,18,55,0.85)';
+      ctx.strokeText('YOU', m.x, m.y - 56 + bob);
+      ctx.fillStyle = '#fff';
+      ctx.fillText('YOU', m.x, m.y - 56 + bob);
+      if (m.units > 0) {
+        const frac = m.units / cap;
+        ctx.fillStyle = 'rgba(30,18,55,0.8)';
+        rounded(m.x - 24, m.y - 46 + bob, 48, 8, 4); ctx.fill();
+        ctx.fillStyle = frac >= 1 ? '#ff6a5c' : frac > 0.66 ? '#ffd95e' : '#8ae05c';
+        rounded(m.x - 22, m.y - 44.5 + bob, 44 * frac, 5, 2.5); ctx.fill();
+      }
+    }
   }
+}
+
+function drawJoystick() {
+  // screen-space: floating joystick while dragging
+  if (!joy || !joy.moved) return;
+  const len = Math.hypot(joy.dx, joy.dy) || 1;
+  const cl = Math.min(len, 56);
+  const kx = joy.sx + joy.dx / len * cl, ky = joy.sy + joy.dy / len * cl;
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(joy.sx, joy.sy, 56, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.beginPath(); ctx.arc(joy.sx, joy.sy, 56, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.65)';
+  ctx.beginPath(); ctx.arc(kx, ky, 24, 0, Math.PI * 2); ctx.fill();
 }
 
 function drawParticles() {
@@ -1165,8 +1407,9 @@ function offlineEarnings() {
   if (away < 120) return;
   const capped = Math.min(away, 8 * 3600);
   const avgValue = unlockedPatches().reduce((s, p) => s + p.value, 0) / unlockedPatches().length;
-  const cycle = (1.4 + 5.5) / speedMult(); // rough mine + travel time
-  const rate = state.miners * avgValue * (3 + state.speedLv) * valueMult() / cycle;
+  // every dozer counts as automated while you're away
+  const rate = state.dozers.reduce((sum, d) =>
+    sum + avgValue * dozerCargo(d) * valueMult() / ((1.4 + 5.5) / dozerSpeedMult(d)), 0);
   const earned = Math.floor(rate * capped * 0.4);
   if (earned < 1) return;
   const mins = Math.floor(away / 60);
