@@ -152,10 +152,12 @@
 // ============================== Setup ==============================
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-let W = 0, H = 0, scale = 1, offX = 0, offY = 0;
+let W = 0, H = 0, viewScale = 1;
 
-// World is a fixed portrait play-space, letterboxed into the screen.
-const WORLD_W = 820, WORLD_H = 1150;
+// The camera centers on the player's dozer and pans across a world much
+// larger than the screen.
+const cam = { x: 1000, y: 1000 };
+let worldB = { minX: 0, minY: 0, maxX: 2000, maxY: 2000 };
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -163,14 +165,28 @@ function resize() {
   canvas.width = W * dpr; canvas.height = H * dpr;
   canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  scale = Math.min(W / WORLD_W, H / WORLD_H);
-  offX = (W - WORLD_W * scale) / 2;
-  offY = (H - WORLD_H * scale) / 2;
+  viewScale = Math.min(1.3, Math.max(0.5, Math.max(W / 850, H / 1350)));
 }
 window.addEventListener('resize', resize);
 resize();
 
-function toWorld(px, py) { return { x: (px - offX) / scale, y: (py - offY) / scale }; }
+function toWorld(px, py) {
+  return { x: (px - W / 2) / viewScale + cam.x, y: (py - H / 2) / viewScale + cam.y };
+}
+function worldToScreen(wx, wy) {
+  return { x: (wx - cam.x) * viewScale + W / 2, y: (wy - cam.y) * viewScale + H / 2 };
+}
+function updateCamera(dt, snap) {
+  const p = miners[0];
+  if (!p) return;
+  const k = snap ? 1 : Math.min(1, dt * 5);
+  cam.x += (p.x - cam.x) * k;
+  cam.y += (p.y - cam.y) * k;
+  const vw = W / viewScale / 2, vh = H / viewScale / 2;
+  const ww = worldB.maxX - worldB.minX, wh = worldB.maxY - worldB.minY;
+  cam.x = ww > vw * 2 ? Math.max(worldB.minX + vw, Math.min(worldB.maxX - vw, cam.x)) : worldB.minX + ww / 2;
+  cam.y = wh > vh * 2 ? Math.max(worldB.minY + vh, Math.min(worldB.maxY - vh, cam.y)) : worldB.minY + wh / 2;
+}
 
 // ============================== Audio ==============================
 let actx = null;
@@ -288,35 +304,36 @@ const MINE_SCALE = 25;
 // double as both the drawn roads and the waypoint graph miners navigate.
 // Layouts cycle across the 10 mines, so each mine feels different.
 const LAYOUTS = [
-  { // Grand Pit — one big open bowl
-    chambers: [{ x: 400, y: 580, rx: 335, ry: 420 }],
-    nodes: [{ x: 400, y: 590 }], edges: [],
-    ores: [{ x: 230, y: 380, r: 75 }, { x: 575, y: 370, r: 80 }, { x: 165, y: 720, r: 72 }, { x: 635, y: 730, r: 72 }],
-    sell: { x: 400, y: 900 }, gate: { x: 400, y: 545 } },
-  { // Twin Hollows — two pits joined by a diagonal road
-    chambers: [{ x: 250, y: 400, rx: 210, ry: 190 }, { x: 520, y: 820, rx: 240, ry: 200 }],
-    nodes: [{ x: 250, y: 400 }, { x: 380, y: 610 }, { x: 520, y: 820 }],
+  { // Grand Pit — central hub with four ore outposts down long roads
+    chambers: [{ x: 1000, y: 1000, rx: 280, ry: 240 }, { x: 1000, y: 420, rx: 230, ry: 190 }, { x: 1620, y: 1020, rx: 230, ry: 190 }, { x: 1000, y: 1600, rx: 230, ry: 190 }, { x: 380, y: 1020, rx: 230, ry: 190 }],
+    nodes: [{ x: 1000, y: 1000 }, { x: 1000, y: 420 }, { x: 1620, y: 1020 }, { x: 1000, y: 1600 }, { x: 380, y: 1020 }],
+    edges: [[0, 1], [0, 2], [0, 3], [0, 4]],
+    ores: [{ x: 1000, y: 380, r: 80 }, { x: 1650, y: 1000, r: 80 }, { x: 350, y: 1000, r: 78 }, { x: 1000, y: 1630, r: 78 }],
+    sell: { x: 1000, y: 1080 }, gate: { x: 1000, y: 880 } },
+  { // Twin Hollows — two big pits joined by one long diagonal road
+    chambers: [{ x: 450, y: 500, rx: 320, ry: 280 }, { x: 1550, y: 1500, rx: 340, ry: 300 }],
+    nodes: [{ x: 450, y: 500 }, { x: 1000, y: 1000 }, { x: 1550, y: 1500 }],
     edges: [[0, 1], [1, 2]],
-    ores: [{ x: 150, y: 340, r: 70 }, { x: 360, y: 330, r: 72 }, { x: 430, y: 900, r: 68 }, { x: 660, y: 850, r: 68 }],
-    sell: { x: 560, y: 750 }, gate: { x: 250, y: 480 } },
-  { // Crossroads — three chambers meeting at a central junction
-    chambers: [{ x: 400, y: 330, rx: 200, ry: 130 }, { x: 180, y: 800, rx: 150, ry: 170 }, { x: 620, y: 800, rx: 150, ry: 170 }],
-    nodes: [{ x: 400, y: 330 }, { x: 400, y: 590 }, { x: 180, y: 800 }, { x: 620, y: 800 }],
-    edges: [[0, 1], [1, 2], [1, 3]],
-    ores: [{ x: 290, y: 300, r: 68 }, { x: 510, y: 300, r: 68 }, { x: 180, y: 790, r: 66 }, { x: 620, y: 790, r: 66 }],
-    sell: { x: 400, y: 620 }, gate: { x: 400, y: 460 } },
-  { // Serpent Canyon — four caves along a winding road
-    chambers: [{ x: 200, y: 330, rx: 160, ry: 130 }, { x: 600, y: 480, rx: 150, ry: 120 }, { x: 230, y: 680, rx: 150, ry: 120 }, { x: 580, y: 880, rx: 170, ry: 130 }],
-    nodes: [{ x: 200, y: 330 }, { x: 600, y: 480 }, { x: 230, y: 680 }, { x: 580, y: 880 }],
+    ores: [{ x: 280, y: 380, r: 78 }, { x: 640, y: 330, r: 78 }, { x: 1330, y: 1630, r: 74 }, { x: 1760, y: 1400, r: 74 }],
+    sell: { x: 1580, y: 1520 }, gate: { x: 440, y: 660 } },
+  { // Crossroads — three distant chambers meeting at a central junction
+    chambers: [{ x: 420, y: 420, rx: 280, ry: 220 }, { x: 1580, y: 420, rx: 280, ry: 220 }, { x: 1000, y: 1650, rx: 300, ry: 230 }],
+    nodes: [{ x: 420, y: 420 }, { x: 1580, y: 420 }, { x: 1000, y: 1650 }, { x: 1000, y: 900 }],
+    edges: [[0, 3], [1, 3], [2, 3]],
+    ores: [{ x: 260, y: 400, r: 72 }, { x: 580, y: 320, r: 72 }, { x: 1620, y: 380, r: 76 }, { x: 860, y: 1700, r: 72 }],
+    sell: { x: 1160, y: 1620 }, gate: { x: 1000, y: 900 } },
+  { // Serpent Canyon — four far-flung caves along a winding road
+    chambers: [{ x: 350, y: 350, rx: 240, ry: 190 }, { x: 1650, y: 650, rx: 240, ry: 190 }, { x: 350, y: 1250, rx: 240, ry: 190 }, { x: 1650, y: 1750, rx: 260, ry: 200 }],
+    nodes: [{ x: 350, y: 350 }, { x: 1650, y: 650 }, { x: 350, y: 1250 }, { x: 1650, y: 1750 }],
     edges: [[0, 1], [1, 2], [2, 3]],
-    ores: [{ x: 200, y: 290, r: 66 }, { x: 620, y: 430, r: 66 }, { x: 180, y: 640, r: 64 }, { x: 480, y: 840, r: 64 }],
-    sell: { x: 650, y: 930 }, gate: { x: 300, y: 730 } },
-  { // The Loop — a ring of caves around a rocky island
-    chambers: [{ x: 400, y: 300, rx: 170, ry: 110 }, { x: 660, y: 620, rx: 130, ry: 150 }, { x: 400, y: 920, rx: 180, ry: 110 }, { x: 150, y: 620, rx: 130, ry: 150 }],
-    nodes: [{ x: 400, y: 300 }, { x: 660, y: 620 }, { x: 400, y: 920 }, { x: 150, y: 620 }],
+    ores: [{ x: 300, y: 300, r: 74 }, { x: 1700, y: 600, r: 74 }, { x: 280, y: 1290, r: 72 }, { x: 1480, y: 1800, r: 70 }],
+    sell: { x: 1750, y: 1680 }, gate: { x: 460, y: 1160 } },
+  { // The Loop — a huge ring of caves around a rocky island
+    chambers: [{ x: 1000, y: 350, rx: 270, ry: 185 }, { x: 1700, y: 1050, rx: 210, ry: 250 }, { x: 1000, y: 1750, rx: 270, ry: 185 }, { x: 300, y: 1050, rx: 210, ry: 250 }],
+    nodes: [{ x: 1000, y: 350 }, { x: 1700, y: 1050 }, { x: 1000, y: 1750 }, { x: 300, y: 1050 }],
     edges: [[0, 1], [1, 2], [2, 3], [3, 0]],
-    ores: [{ x: 310, y: 280, r: 64 }, { x: 670, y: 600, r: 62 }, { x: 140, y: 600, r: 62 }, { x: 300, y: 930, r: 58 }],
-    sell: { x: 490, y: 930 }, gate: { x: 490, y: 330 } },
+    ores: [{ x: 880, y: 320, r: 74 }, { x: 1730, y: 1000, r: 70 }, { x: 270, y: 990, r: 70 }, { x: 840, y: 1780, r: 66 }],
+    sell: { x: 1160, y: 1740 }, gate: { x: 1160, y: 380 } },
 ];
 
 const LEVELS = [
@@ -421,6 +438,12 @@ function loadLevel() {
     gems: [], spawnT: 0,
   }));
   sellPad = { x: layout.sell.x, y: layout.sell.y, w: 190, h: 84 };
+  worldB = layout.chambers.reduce((b, ch) => ({
+    minX: Math.min(b.minX, ch.x - ch.rx - 170),
+    minY: Math.min(b.minY, ch.y - ch.ry - 170),
+    maxX: Math.max(b.maxX, ch.x + ch.rx + 170),
+    maxY: Math.max(b.maxY, ch.y + ch.ry + 170),
+  }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
   buildRocks();
   chest = null;
   for (const mn of miners) {
@@ -431,6 +454,8 @@ function loadLevel() {
   }
   document.getElementById('mineLabel').textContent =
     '⛏ Mine ' + state.level + '/' + LEVELS.length + ' — ' + L.name;
+  cam.x = sellPad.x; cam.y = sellPad.y;
+  updateCamera(0, true);
 }
 
 // Waypoint navigation along the layout's road graph
@@ -498,6 +523,24 @@ function buildRocks() {
       if (layout.chambers.some(c => c !== ch &&
           ((x - c.x) / c.rx) ** 2 + ((y - c.y) / c.ry) ** 2 < 1)) continue;
       rocks.push({ x, y, r: 40 + ((i * 53 + ci * 17) % 26), shade: (i * 29) % 3 });
+    }
+  });
+  // rocks lining both sides of the long roads, canyon-style
+  segs.forEach(([p, q], si) => {
+    const len = Math.hypot(q.x - p.x, q.y - p.y);
+    const nx = -(q.y - p.y) / len, ny = (q.x - p.x) / len;
+    const steps = Math.floor(len / 130);
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const px = p.x + (q.x - p.x) * t, py = p.y + (q.y - p.y) * t;
+      for (const side of [-1, 1]) {
+        const off = 108 + ((s * 29 + si * 13 + (side + 1) * 7) % 26);
+        const x = px + nx * side * off, y = py + ny * side * off;
+        if (layout.chambers.some(c =>
+            ((x - c.x) / (c.rx + 30)) ** 2 + ((y - c.y) / (c.ry + 30)) ** 2 < 1)) continue;
+        if (segs.some((seg2, sj) => sj !== si && distToSeg(x, y, seg2[0], seg2[1]) < 88)) continue;
+        rocks.push({ x, y, r: 34 + ((s * 17 + si * 7) % 20), shade: (s * 31 + si) % 3 });
+      }
     }
   });
 }
@@ -583,7 +626,7 @@ function updateMiners(dt) {
     if (!d) return;
     if (m.isPlayer) { updatePlayer(m, d, dt); return; }
 
-    const spd = 190 * dozerSpeedMult(d);
+    const spd = 260 * dozerSpeedMult(d);
     m.bob += dt * 10;
     if (m.state === 'toOre') {
       if (!m.target || !patches.includes(m.target) || !state.unlocked[m.target.idx]) {
@@ -625,7 +668,7 @@ function updateMiners(dt) {
 
 let lastPickupSfx = 0;
 function updatePlayer(m, d, dt) {
-  const spd = 230 * dozerSpeedMult(d);
+  const spd = 330 * dozerSpeedMult(d);
   const cap = playerCap(d);
 
   // steering: joystick drag or keyboard
@@ -738,7 +781,7 @@ function updateChest(dt) {
       chestTimer = 35 + Math.random() * 30;
       const ch = layout.chambers[Math.floor(Math.random() * layout.chambers.length)];
       chest = { x: ch.x + (Math.random() - 0.5) * ch.rx * 0.9,
-                y: ch.y + (Math.random() - 0.5) * ch.ry * 0.9, t: 0, life: 14 };
+                y: ch.y + (Math.random() - 0.5) * ch.ry * 0.9, t: 0, life: 22 };
     }
   }
 }
@@ -995,8 +1038,9 @@ function draw(t) {
   ctx.save();
   let sx = 0, sy = 0;
   if (shake > 0) { sx = (Math.random() - 0.5) * shake; sy = (Math.random() - 0.5) * shake; }
-  ctx.translate(offX + sx, offY + sy);
-  ctx.scale(scale, scale);
+  ctx.translate(W / 2 + sx, H / 2 + sy);
+  ctx.scale(viewScale, viewScale);
+  ctx.translate(-cam.x, -cam.y);
 
   drawPit();
   drawSellPad(t);
@@ -1010,6 +1054,7 @@ function draw(t) {
   ctx.restore();
   drawFlyCoins();
   drawJoystick();
+  drawMinimap(t);
 }
 
 function drawPit() {
@@ -1352,6 +1397,68 @@ function drawJoystick() {
   ctx.beginPath(); ctx.arc(kx, ky, 24, 0, Math.PI * 2); ctx.fill();
 }
 
+function drawMinimap(t) {
+  const mw = 116, mh = 116, mx = 12, my = 104;
+  const ww = worldB.maxX - worldB.minX, wh = worldB.maxY - worldB.minY;
+  const s = Math.min(mw / ww, mh / wh);
+  const ox = mx + (mw - ww * s) / 2, oy = my + (mh - wh * s) / 2;
+  const px = x => ox + (x - worldB.minX) * s;
+  const py = y => oy + (y - worldB.minY) * s;
+  const theme = currentLevel();
+
+  ctx.fillStyle = 'rgba(15,10,30,0.55)';
+  rounded(mx - 6, my - 6, mw + 12, mh + 12, 10); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 1.5;
+  rounded(mx - 6, my - 6, mw + 12, mh + 12, 10); ctx.stroke();
+
+  // roads + chambers
+  ctx.strokeStyle = theme.floor[0]; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  for (const [a, b] of layout.edges) {
+    const p = layout.nodes[a], q = layout.nodes[b];
+    ctx.beginPath(); ctx.moveTo(px(p.x), py(p.y)); ctx.lineTo(px(q.x), py(q.y)); ctx.stroke();
+  }
+  ctx.fillStyle = theme.floor[1];
+  for (const ch of layout.chambers) {
+    ctx.beginPath(); ctx.ellipse(px(ch.x), py(ch.y), ch.rx * s, ch.ry * s, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  // ore dots (dim = locked)
+  for (const p of patches) {
+    ctx.globalAlpha = state.unlocked[p.idx] ? 1 : 0.4;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(px(p.x), py(p.y), 4, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // sell pad
+  ctx.fillStyle = '#8a5cf5';
+  rounded(px(sellPad.x) - 4.5, py(sellPad.y) - 3, 9, 6, 2); ctx.fill();
+  // portal + chest markers
+  if (allUnlocked() && state.level < LEVELS.length) {
+    ctx.fillStyle = 'rgba(255,217,94,' + (0.6 + Math.sin(t * 5) * 0.4) + ')';
+    star(px(layout.gate.x), py(layout.gate.y), 5); ctx.fill();
+  }
+  if (chest) {
+    ctx.fillStyle = Math.sin(t * 8) > 0 ? '#ffd95e' : '#e6394f';
+    ctx.beginPath(); ctx.arc(px(chest.x), py(chest.y), 3.5, 0, Math.PI * 2); ctx.fill();
+  }
+  // bots then player
+  for (const m of miners) {
+    if (m.isPlayer) continue;
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath(); ctx.arc(px(m.x), py(m.y), 2.2, 0, Math.PI * 2); ctx.fill();
+  }
+  if (miners[0]) {
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = 'rgba(30,18,55,0.9)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(px(miners[0].x), py(miners[0].y), 4, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+  }
+  // camera viewport
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1;
+  const vw = W / viewScale, vh = H / viewScale;
+  ctx.strokeRect(px(cam.x - vw / 2), py(cam.y - vh / 2), vw * s, vh * s);
+}
+
 function drawParticles() {
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 1.6));
@@ -1380,7 +1487,8 @@ function drawFlyCoins() {
   const tx = box.left + box.width / 2, ty = box.top + box.height / 2;
   for (const c of flyCoins) {
     if (c.delay > 0) continue;
-    const sx0 = offX + c.x * scale, sy0 = offY + c.y * scale;
+    const s0 = worldToScreen(c.x, c.y);
+    const sx0 = s0.x, sy0 = s0.y;
     const k = c.t, ease = k * k * (3 - 2 * k);
     const x = sx0 + (tx - sx0) * ease;
     const y = sy0 + (ty - sy0) * ease - Math.sin(k * Math.PI) * 90;
@@ -1409,7 +1517,7 @@ function offlineEarnings() {
   const avgValue = unlockedPatches().reduce((s, p) => s + p.value, 0) / unlockedPatches().length;
   // every dozer counts as automated while you're away
   const rate = state.dozers.reduce((sum, d) =>
-    sum + avgValue * dozerCargo(d) * valueMult() / ((1.4 + 5.5) / dozerSpeedMult(d)), 0);
+    sum + avgValue * dozerCargo(d) * valueMult() / ((1.4 + 9) / dozerSpeedMult(d)), 0);
   const earned = Math.floor(rate * capped * 0.4);
   if (earned < 1) return;
   const mins = Math.floor(away / 60);
@@ -1441,6 +1549,7 @@ function frame(now) {
 
   updatePatches(dt);
   updateMiners(dt);
+  updateCamera(dt, false);
   updateChest(dt);
   updateFX(dt);
 
